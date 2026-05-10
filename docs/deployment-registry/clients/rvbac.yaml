@@ -1,0 +1,140 @@
+# ScalePass deployment registry snapshot
+# Scope: RVBAC / RVA Consulting Aidevops worker POC and production-source handover
+# Secrets are never stored here. Use Vaultwarden / secure helper references only.
+
+registry_version: 0.2
+last_verified: 2026-05-10
+
+client:
+  canonical_slug: rvbac
+  related_client_record_slug: rvabc
+  brand_name: RVA Consulting
+  website:
+    primary: https://rvabc.co.uk
+  status: poc_validation
+  notes:
+    - "The AITable/onboarding record appears as RVA Consulting / rvabc.co.uk; rvbac is preserved as the user-supplied worker/repo/deployment label."
+    - "Contact PII is intentionally omitted from this shareable registry snapshot. Source operational contacts from AITable only."
+
+source_control:
+  canonical_production_source:
+    owner: ScalePass
+    repo: aidevops
+    slug: ScalePass/aidevops
+    url: https://github.com/ScalePass/aidevops
+    local_checkout: /opt/aidevops
+    default_branch: main
+    current_verified_head: 93908177b
+    visibility: public
+  workflow_policy:
+    change_branching: feature_branch_required
+    pr_policy: "Raise PRs only for builds that have completed the end-to-end deployment flow and passed validation / test-driven CI."
+    temporary_merge_policy: "Fast direct merges are allowed for speed while sources stabilize; approval gate planned before stable production operation."
+  current_feature_branch:
+    name: fix/pulse-merged-pr-reconcile-scalepass
+    pushed: true
+    head: 93908177b
+    validation:
+      - "test-pulse-issue-reconcile.sh: 23 passed, 0 failed"
+      - "test-pulse-post-dispatch-housekeeping.sh: 4 passed, 0 failed"
+      - "pre-push secret/quality gate: passed"
+
+cloudron:
+  server: my.scalepass.io
+  app:
+    name: rvbac-aidevops-v2
+    fqdn: rvbac-aidevops-v2.scalepass.io
+    url: https://rvbac-aidevops-v2.scalepass.io
+    app_id: ea33b0d3-4360-4d0b-b2fd-d5ec0ea0dfd7
+    install_model: fresh_source_validation_app
+    state: running
+  runtime_paths:
+    worker_config: /app/data/config/worker.json
+    workspace_root: /app/data/workspace
+    logs_root: /app/data/logs
+    persistent_aidevops_repo: /app/data/Git/aidevops
+    persistent_agents_root: /app/data/.aidevops/agents
+  public_endpoints:
+    health: https://rvbac-aidevops-v2.scalepass.io/health
+    status: https://rvbac-aidevops-v2.scalepass.io/status
+  last_verified_status:
+    health: ok
+    app_version: 0.1.0
+    pulse_enabled: true
+    workers:
+      max: 6
+      available: 6
+      active: 0
+
+worker:
+  github_identity: ScalePass
+  github_target_repo:
+    slug: ScalePass/rvbac-aidevops-poc
+    url: https://github.com/ScalePass/rvbac-aidevops-poc
+    required_permissions:
+      push: true
+      maintain: true
+      admin: true
+    last_verified_permissions:
+      push: true
+      maintain: true
+      admin: true
+  model_runtime:
+    provider_path: OpenCode gateway
+    observed_model: github-copilot/gpt-5.5
+  pulse:
+    enabled: true
+    worker_capacity: 6
+    lifecycle_fix_deployed: true
+    lifecycle_fix_commit: 93908177b
+    verified_behavior:
+      - "Merged PR source issues are reconciled before early dispatch."
+      - "Completed/merged PRs mark source issue done and remove dispatch labels before duplicate dispatch can occur."
+
+secrets:
+  storage_policy: "No secret values in this registry, repo, logs, or chat. Store only references."
+  references:
+    cloudron_api_token_file_runtime: /tmp/cloudron_token.secret
+    github_worker_token_local_helper_var: SCALEPASS_RVBAC_V2_GITHUB_TOKEN
+    cloudron_env_aliases:
+      - GH_TOKEN
+      - GITHUB_TOKEN
+    vaultwarden_items:
+      cloudron_api_token: "[PRODUCTION] Cloudron API Key - my.scalepass.io Navi"
+      github_admin_token: "[PRODUCTION] GitHub Admin Token - ScalePass Account"
+      worker_api_token: "[PRODUCTION] Worker API Token - rvbac-aidevops-v2.scalepass.io"
+  rotation:
+    github_worker_token_rotated: true
+    app_env_updated: true
+    app_identity_verified_after_rotation: true
+    old_token_revocation_required_in_github_ui: true
+
+sanitization:
+  last_scan: 2026-05-10
+  method: Cloudron files API, bounded likely persisted locations only
+  locations_checked:
+    - /app/data/workspace
+    - /app/data/logs
+  patterns_checked:
+    - x-access-token:
+    - github_pat_
+    - ghp_
+    - gho_
+    - ghu_
+    - ghs_
+  result:
+    dirs_scanned: 83
+    files_checked: 153
+    token_bearing_hits: 0
+  known_workspace_remote_clean: true
+
+registry_placement:
+  current_local_source: ~/.hermes/scalepass/docs/deployment-registry/clients/rvbac.yaml
+  repo_level_copy: docs/deployment-registry/clients/rvbac.yaml
+  repo_level_policy:
+    keep_sanitized_registry_in_repo: true
+    keep_pii_out_of_public_repo: true
+    keep_secrets_out_of_all_registries: true
+  notes:
+    - "Because ScalePass/aidevops is currently public, repo-level registry files must be sanitized: no contact PII, no attachment URLs, no tokens, no credentials."
+    - "Detailed operational contacts and raw AITable fields should stay in AITable / Vaultwarden / private ops docs, not the public production source repo."
