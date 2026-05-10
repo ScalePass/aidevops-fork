@@ -475,12 +475,45 @@ _should_lia() {
 # Each helper encapsulates the action logic for one reconcile sub-stage.
 # Called once per qualifying issue; the outer loop and issue fetch live in
 # reconcile_issues_single_pass — not here.
-#
+##############################################
 # Return conventions (consistent across helpers):
 #   0 = action taken (issue closed / fixed / nudged / escalated)
 #   1 = no action taken (skipped, guard fired, API failure, etc.)
 #   2 = reset action taken (used by _action_rsd_single: reset to available)
 ##############################################
+
+#######################################
+# Mark an issue done before closing it after merged-PR evidence.
+#
+# This is a duplicate-dispatch safety boundary: closing the issue is the final
+# protection, but the label transition removes the open-candidate shape
+# (`auto-dispatch` + active status) before the close API call. If the close
+# succeeds but label cleanup races/fails, the issue is still closed; if the
+# close is delayed, the issue no longer looks dispatchable to later scans.
+# Best-effort only — never block the verified close path.
+#
+# Args: $1=slug, $2=issue_num
+# Returns: 0 always
+#######################################
+_mark_issue_done_after_merged_pr() {
+	local slug="$1" issue_num="$2"
+	[[ -n "$slug" && "$issue_num" =~ ^[0-9]+$ ]] || return 0
+
+	if declare -F set_issue_status >/dev/null 2>&1; then
+		set_issue_status "$issue_num" "$slug" "done" --remove-label "$_PIR_AUTO_DISPATCH_LABEL" >/dev/null 2>&1 || true
+	else
+		gh issue edit "$issue_num" --repo "$slug" \
+			--add-label "$_PIR_STATUS_DONE" \
+			--remove-label "$_PIR_STATUS_AVAILABLE" \
+			--remove-label "$_PIR_STATUS_QUEUED" \
+			--remove-label "$_PIR_STATUS_CLAIMED" \
+			--remove-label "$_PIR_STATUS_IN_PROGRESS" \
+			--remove-label "$_PIR_STATUS_IN_REVIEW" \
+			--remove-label "$_PIR_AUTO_DISPATCH_LABEL" \
+			>/dev/null 2>&1 || true
+	fi
+	return 0
+}
 
 #######################################
 # Stage 1 action: close an issue whose work is done via a merged PR.
@@ -516,6 +549,7 @@ _action_ciw_single() {
 		fi
 	fi
 
+	_mark_issue_done_after_merged_pr "$slug" "$issue_num"
 	gh issue close "$issue_num" --repo "$slug" \
 		--comment "Closing: work completed via merged PR ${pr_ref:-"(detected by dedup helper)"} (merged at ${merged_at:-unknown}). Issue was open but dedup guard was blocking re-dispatch." \
 		>/dev/null 2>&1 || return 1
@@ -561,6 +595,7 @@ _action_rsd_single() {
 			fi
 		fi
 
+		_mark_issue_done_after_merged_pr "$slug" "$issue_num"
 		gh issue close "$issue_num" --repo "$slug" \
 			--comment "Closing: work completed via merged PR ${pr_ref:-"(detected by dedup)"} (merged at ${merged_at:-unknown})." \
 			>/dev/null 2>&1 || return 1
@@ -624,6 +659,7 @@ _action_oimp_single() {
 		fi
 	fi
 
+	_mark_issue_done_after_merged_pr "$slug" "$issue_num"
 	gh issue close "$issue_num" --repo "$slug" \
 		--comment "Closing: linked PR #${merged_pr_num} was already merged. Detected by reconcile pass." \
 		>/dev/null 2>&1 || return 1

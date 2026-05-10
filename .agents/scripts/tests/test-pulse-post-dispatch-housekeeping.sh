@@ -52,7 +52,12 @@ _run_post_merge_review_scanner() { _record_stage "post_merge"; return 0; }
 _run_auto_decomposer_scanner() { _record_stage "auto_decomposer"; return 0; }
 run_simplification_dedup_cleanup() { _record_stage "dedup_cleanup"; return 0; }
 fast_fail_prune_expired() { _record_stage "fast_fail_prune"; return 0; }
+_preflight_cleanup_and_ledger() { _record_stage "cleanup"; return 0; }
+_preflight_capacity_and_labels() { _record_stage "capacity_labels"; return 0; }
 _preflight_ownership_reconcile() { _record_stage "ownership_reconcile"; return 0; }
+_preflight_early_dispatch() { _record_stage "early_dispatch"; return 0; }
+_preflight_prefetch_and_scope() { _record_stage "prefetch_scope"; return 0; }
+_log_substage_timing() { return 0; }
 
 _pulse_run_optional_stage_with_timeout() {
 	local stage_name="$1"
@@ -78,7 +83,12 @@ install_stage_stubs() {
 	_run_auto_decomposer_scanner() { _record_stage "auto_decomposer"; return 0; }
 	run_simplification_dedup_cleanup() { _record_stage "dedup_cleanup"; return 0; }
 	fast_fail_prune_expired() { _record_stage "fast_fail_prune"; return 0; }
+	_preflight_cleanup_and_ledger() { _record_stage "cleanup"; return 0; }
+	_preflight_capacity_and_labels() { _record_stage "capacity_labels"; return 0; }
 	_preflight_ownership_reconcile() { _record_stage "ownership_reconcile"; return 0; }
+	_preflight_early_dispatch() { _record_stage "early_dispatch"; return 0; }
+	_preflight_prefetch_and_scope() { _record_stage "prefetch_scope"; return 0; }
+	_log_substage_timing() { return 0; }
 
 	_pulse_run_optional_stage_with_timeout() {
 		local stage_name="$1"
@@ -104,6 +114,7 @@ setup_test_env() {
 	TEST_ROOT="$(mktemp -d -t t3055-housekeeping.XXXXXX)"
 	export HOME="${TEST_ROOT}/home"
 	mkdir -p "${HOME}/.aidevops/logs" "${HOME}/.aidevops/cache"
+	export PIDFILE="${HOME}/.aidevops/logs/pulse.pid"
 	LOGFILE="${TEST_ROOT}/pulse.log"
 	STAGE_LOG="${TEST_ROOT}/stages.log"
 	: >"$LOGFILE"
@@ -131,6 +142,7 @@ teardown_test_env() {
 	LOGFILE=""
 	STAGE_LOG=""
 	unset TEST_STAGE_SLEEP_ONCE AIDEVOPS_PULSE_ASYNC_POST_DISPATCH_HOUSEKEEPING
+	unset AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE
 	unset _PULSE_RATE_LIMIT_CB_LOADED
 	return 0
 }
@@ -230,10 +242,41 @@ test_housekeeping_lock_skips_live_duplicate() {
 	return 0
 }
 
+test_preflight_reconciles_before_early_dispatch() {
+	setup_test_env
+	export AIDEVOPS_SKIP_PULSE_PREFETCH_BUDGET_GATE=1
+	_run_preflight_stages
+
+	local ownership_line early_line failures=0 failmsg=""
+	ownership_line=$(grep -n '^ownership_reconcile$' "$STAGE_LOG" 2>/dev/null | head -1 | cut -d: -f1 || true)
+	early_line=$(grep -n '^early_dispatch$' "$STAGE_LOG" 2>/dev/null | head -1 | cut -d: -f1 || true)
+	if [[ ! "$ownership_line" =~ ^[0-9]+$ ]]; then
+		failures=$((failures + 1))
+		failmsg="${failmsg} | ownership reconcile missing"
+	fi
+	if [[ ! "$early_line" =~ ^[0-9]+$ ]]; then
+		failures=$((failures + 1))
+		failmsg="${failmsg} | early dispatch missing"
+	fi
+	if [[ "$ownership_line" =~ ^[0-9]+$ && "$early_line" =~ ^[0-9]+$ && "$ownership_line" -ge "$early_line" ]]; then
+		failures=$((failures + 1))
+		failmsg="${failmsg} | ownership line ${ownership_line} not before early dispatch line ${early_line}"
+	fi
+
+	if [[ "$failures" -eq 0 ]]; then
+		print_result "preflight reconciles merged PR issues before early dispatch" 0
+	else
+		print_result "preflight reconciles merged PR issues before early dispatch" 1 "$failmsg"
+	fi
+	teardown_test_env
+	return 0
+}
+
 main() {
 	test_sync_housekeeping_runs_all_stages
 	test_async_housekeeping_returns_before_slow_stage
 	test_housekeeping_lock_skips_live_duplicate
+	test_preflight_reconciles_before_early_dispatch
 
 	printf '\n============================================\n'
 	printf 'Tests run:    %d\n' "$TESTS_RUN"

@@ -821,6 +821,71 @@ test_feedback_backfill_uses_label_constants() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 16: merged-PR reconcile marks issues done before closing
+# ---------------------------------------------------------------------------
+test_merged_pr_close_marks_done_and_removes_dispatch_label() {
+	local actions_sh="${SCRIPT_DIR}/../pulse-issue-reconcile-actions.sh"
+	local tmp_dir ops_log result
+	tmp_dir=$(mktemp -d)
+	ops_log="${tmp_dir}/ops.log"
+
+	result=$(bash -c '
+		ops_log=$1
+		actions_sh=$2
+		LOGFILE="${ops_log}.pulse"
+		_PIR_AUTO_DISPATCH_LABEL="auto-dispatch"
+		_PIR_STATUS_DONE="status:done"
+		_PIR_STATUS_AVAILABLE="status:available"
+		_PIR_STATUS_QUEUED="status:queued"
+		_PIR_STATUS_CLAIMED="status:claimed"
+		_PIR_STATUS_IN_PROGRESS="status:in-progress"
+		_PIR_STATUS_IN_REVIEW="status:in-review"
+		set_issue_status() {
+			printf "set_issue_status %s\n" "$*" >>"$ops_log"
+			return 0
+		}
+		gh() {
+			if [[ "${1:-}" == "issue" && "${2:-}" == "close" ]]; then
+				printf "gh %s\n" "$*" >>"$ops_log"
+				return 0
+			fi
+			return 1
+		}
+		# shellcheck source=/dev/null
+		source "$actions_sh"
+		_action_oimp_single "owner/repo" 42 /no/such/verify "|42=7|" || exit $?
+		cat "$ops_log"
+	' _ "$ops_log" "$actions_sh" 2>/dev/null)
+
+	rm -rf "$tmp_dir"
+
+	local all_ok=1
+	if ! printf '%s\n' "$result" | grep -q '^set_issue_status 42 owner/repo done --remove-label auto-dispatch$'; then
+		_fail "merged-PR close: status:done/auto-dispatch cleanup missing"
+		all_ok=0
+	fi
+	if ! printf '%s\n' "$result" | grep -q '^gh issue close 42 --repo owner/repo'; then
+		_fail "merged-PR close: issue close command missing"
+		all_ok=0
+	fi
+	local set_line close_line
+	set_line=$(printf '%s\n' "$result" | grep -n '^set_issue_status ' | head -1 | cut -d: -f1)
+	close_line=$(printf '%s\n' "$result" | grep -n '^gh issue close ' | head -1 | cut -d: -f1)
+	if [[ "$set_line" =~ ^[0-9]+$ && "$close_line" =~ ^[0-9]+$ ]]; then
+		if [[ "$set_line" -ge "$close_line" ]]; then
+			_fail "merged-PR close: cleanup did not happen before close"
+			all_ok=0
+		fi
+	else
+		_fail "merged-PR close: could not determine cleanup/close ordering"
+		all_ok=0
+	fi
+
+	[[ "$all_ok" == "1" ]] && _pass "merged-PR close marks source issue done and removes auto-dispatch before close"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Run all tests
 # ---------------------------------------------------------------------------
 test_cache_miss_no_file
@@ -841,6 +906,7 @@ test_t2985_oimp_lookup_no_prefix_collision
 test_t2985_action_oimp_single_signature
 test_available_feedback_worker_issue_not_assigned
 test_feedback_backfill_uses_label_constants
+test_merged_pr_close_marks_done_and_removes_dispatch_label
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

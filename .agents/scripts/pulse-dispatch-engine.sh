@@ -1135,6 +1135,14 @@ _run_preflight_stages() {
 		_preflight_cleanup_and_ledger || true
 	run_stage_with_timeout "preflight_capacity_and_labels" "$_pflt_timeout" \
 		_preflight_capacity_and_labels || true
+	# Duplicate-dispatch guard: reconcile merged PRs before the early dispatch
+	# post-dispatch housekeeping copy remains as a catch-up pass, but it is too
+	# late for issues whose PR merged since the previous cycle: dispatch can see
+	# the still-open `auto-dispatch` issue first and launch duplicate workers.
+	# Synchronous pre-dispatch reconcile marks merged-PR issues status:done and
+	# closes them before candidate enumeration.
+	run_stage_with_timeout "preflight_ownership_reconcile" "$_pflt_timeout" \
+		_preflight_ownership_reconcile || true
 	# t3054: preflight_early_dispatch does NOT use run_stage_with_timeout.
 	# Unlike other preflight stages (single-step operations), this stage
 	# wraps apply_dispatch_max which iterates N candidates, each
