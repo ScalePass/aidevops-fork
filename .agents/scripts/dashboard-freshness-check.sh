@@ -231,13 +231,17 @@ _cadence_gate_ok() {
 # Dashboard enumeration
 # =============================================================================
 
-# Emit "slug issue_number" lines for every known dashboard via the
-# ~/.aidevops/logs/health-issue-* cache files written by
-# stats-health-dashboard.sh. Historical cache names included the role segment
-# (`health-issue-<runner>-supervisor-<slug-dashed>`); current canonical
-# identity caches omit it (`health-issue-<canonical>-<slug-dashed>`). Resolve
-# both by matching the longest repos.json slug suffix instead of parsing a fixed
-# segment position.
+# Emit "slug issue_number" lines for every known dashboard. Prefer local
+# ~/.aidevops/logs/health-issue-* cache files written by stats-health-dashboard.sh,
+# and include open `source:health-dashboard` issues in configured repos. The
+# GitHub enumeration is intentional even when some caches exist: it covers
+# orphaned historical dashboards after cache migration, identity changes, or
+# fresh hosts where only the stale dashboard's cache is absent.
+# Historical cache names included the role segment
+# (`health-issue-<runner>-supervisor-<slug-dashed>`); current canonical identity
+# caches omit it (`health-issue-<canonical>-<slug-dashed>`). Resolve both by
+# matching the longest repos.json slug suffix instead of parsing a fixed segment
+# position.
 _enumerate_dashboards() {
 	local cache issue slug_raw slug key seen="|" slug_candidates
 	slug_candidates="$(_repo_slug_candidates)"
@@ -256,7 +260,59 @@ _enumerate_dashboards() {
 		printf '%s %s\n' "$slug" "$issue"
 	done
 	shopt -u nullglob
+	if command -v gh >/dev/null 2>&1 && gh auth status &>/dev/null 2>&1; then
+		while IFS= read -r slug; do
+			[[ -n "$slug" ]] || continue
+			while IFS= read -r issue; do
+				[[ "$issue" =~ ^[0-9]+$ ]] || continue
+				key="${slug} ${issue}"
+				case "$seen" in
+					*"|${key}|"*) continue ;;
+				esac
+				seen="${seen}${key}|"
+				printf '%s %s\n' "$slug" "$issue"
+			done < <(_github_health_dashboard_issue_numbers "$slug")
+		done < <(_repo_slugs_for_dashboard_scan)
+	fi
 	return 0
+}
+
+# Emit configured remote pulse repo slugs that may host health dashboards.
+_repo_slugs_for_dashboard_scan() {
+	[[ -f "$REPOS_JSON" ]] || return 0
+	if ! command -v jq >/dev/null 2>&1; then
+		return 0
+	fi
+	jq -r '
+		.initialized_repos[]?
+		| select(.pulse == true and (.local_only // false) == false and .slug != null and .slug != "")
+		| .slug
+	' "$REPOS_JSON" || true
+	return 0
+}
+
+# Emit open supervisor health-dashboard issue numbers for a repo via
+# REST-backed gh api. Contributor dashboards are intentionally excluded: they
+# can be stale when that contributor is offline and are not the operator's
+# primary single-glance health surface.
+_github_health_dashboard_issue_numbers() {
+	local slug="$1"
+	[[ -n "$slug" ]] || return 0
+	gh api --paginate "repos/${slug}/issues?state=open&labels=source%3Ahealth-dashboard,supervisor&per_page=100" \
+		--jq '.[] | select(.pull_request == null) | .number' 2>>"$LOGFILE" || true
+	return 0
+}
+
+# Return success when a dashboard issue belongs to a supervisor runner. This is
+# a defense-in-depth guard for local cache entries, which do not encode the
+# role in the current canonical filename format.
+_dashboard_issue_is_supervisor() {
+	local issue_json="$1"
+	printf '%s\n' "$issue_json" | jq -e '
+		((.title // "") | startswith("[Supervisor:"))
+		or any(.labels[]?; (.name // .) == "supervisor")
+	' >/dev/null 2>&1
+	return $?
 }
 
 # Emit known repos as "dashed<TAB>slug" lines sorted by longest dashed slug
@@ -717,9 +773,13 @@ scan_one_dashboard() {
 		return 0
 	fi
 
-	issue_json=$(gh api "repos/${slug}/issues/${dash_issue}" --jq '{state,body}' 2>>"$LOGFILE" || echo "")
+	issue_json=$(gh api "repos/${slug}/issues/${dash_issue}" --jq '{state,body,title,labels}' 2>>"$LOGFILE" || echo "")
 	if [[ -z "$issue_json" ]]; then
 		_log_warn "Empty issue payload from gh at ${slug}#${dash_issue}"
+		return 0
+	fi
+	if ! _dashboard_issue_is_supervisor "$issue_json"; then
+		_log_info "Dashboard ${slug}#${dash_issue} is not a supervisor dashboard — skipping stale scan"
 		return 0
 	fi
 	issue_state=$(printf '%s\n' "$issue_json" | jq -r '.state // ""' 2>/dev/null || true)

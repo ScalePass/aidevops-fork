@@ -110,6 +110,7 @@ files_include_workflow_changes() {
 #
 # Known headless signals (exhaustive — add new ones here as dispatch infra grows):
 #   FULL_LOOP_HEADLESS=true   — pulse supervisor dispatch
+#   AIDEVOPS_SESSION_ORIGIN=worker — canonical worker-origin override
 #   AIDEVOPS_HEADLESS=true    — headless-runtime-helper.sh
 #   OPENCODE_HEADLESS=true    — OpenCode headless mode
 #   GITHUB_ACTIONS=true       — CI environment
@@ -226,6 +227,44 @@ _gh_wrapper_args_have_label() {
 		esac
 		if [[ -n "$label_val" && ",${label_val}," == *",${needle},"* ]]; then
 			return 0
+		fi
+		shift
+	done
+	return 1
+}
+
+# t3099: Internal — check if argv contains any label with the given prefix in
+# any --label arg. Supports comma-separated label lists (e.g.
+# --label "bug,status:available"). Used by gh_create_issue to avoid creating
+# origin-labelled issues with no lifecycle status while preserving caller-owned
+# status labels.
+# Returns 0 if a matching label is found, 1 otherwise.
+_gh_wrapper_args_have_label_prefix() {
+	local prefix="$1"
+	shift
+	while [[ $# -gt 0 ]]; do
+		local cur="$1"
+		local label_val=""
+		case "$cur" in
+		--label)
+			label_val="${2:-}"
+			[[ $# -gt 1 ]] && shift
+			;;
+		--label=*)
+			label_val="${cur#--label=}"
+			;;
+		esac
+		if [[ -n "$label_val" ]]; then
+			local _saved_ifs="$IFS"
+			IFS=','
+			local _label_part
+			for _label_part in $label_val; do
+				if [[ "$_label_part" == "${prefix}"* ]]; then
+					IFS="$_saved_ifs"
+					return 0
+				fi
+			done
+			IFS="$_saved_ifs"
 		fi
 		shift
 	done
@@ -371,6 +410,9 @@ _gh_wrapper_auto_sig() {
 		[[ -z "$sig_footer" ]] && return 0
 		local signed_body_file
 		signed_body_file=$(mktemp "${TMPDIR:-/tmp}/aidevops-gh-body.XXXXXX") || return 0
+		# Cleanup scope is established by the public gh_* wrappers that call this
+		# helper. Do not set a RETURN trap here: the temp file must remain readable
+		# until the wrapper delegates to gh, then the wrapper-level trap removes it.
 		push_cleanup "rm -f \"$signed_body_file\""
 		{
 			cat "$body_file_val"

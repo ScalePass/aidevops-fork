@@ -63,6 +63,76 @@ _GH_REST_FALLBACK_THRESHOLD="${AIDEVOPS_GH_REST_FALLBACK_THRESHOLD:-3000}"
 _GH_REST_FALLBACK_RATE_LIMIT_CACHE=""
 _GH_REST_FALLBACK_RATE_LIMIT_CACHE_TS=0
 _GH_LAST_GRAPHQL_REMAINING=""
+_GH_REST_PR_VIEW_CACHE_DIR=""
+
+#######################################
+# Return 0 when REST PR view responses may be reused within this shell.
+# The cache is intentionally process-scoped: pulse stages that source the shared
+# wrappers reuse duplicate REST reads during one cycle, while later cycles start
+# with fresh state. Callers can bypass before mutation-sensitive reads with
+# AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1.
+# Returns: 0 when enabled, 1 otherwise.
+#######################################
+_rest_pr_view_cache_enabled() {
+	[[ "${AIDEVOPS_GH_PR_VIEW_CACHE:-0}" == "1" ]] || return 1
+	[[ "${AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE:-0}" == "1" ]] && return 1
+	command -v jq >/dev/null 2>&1 || return 1
+	return 0
+}
+
+#######################################
+# Resolve the per-process REST PR view cache directory.
+# Returns: path on stdout; 0 on success, 1 on mkdir failure.
+#######################################
+_rest_pr_view_cache_dir() {
+	if [[ -n "${AIDEVOPS_GH_PR_VIEW_CACHE_DIR:-}" ]]; then
+		mkdir -p "$AIDEVOPS_GH_PR_VIEW_CACHE_DIR" 2>/dev/null || return 1
+		printf '%s' "$AIDEVOPS_GH_PR_VIEW_CACHE_DIR"
+		return 0
+	fi
+	if [[ -z "$_GH_REST_PR_VIEW_CACHE_DIR" ]]; then
+		_GH_REST_PR_VIEW_CACHE_DIR="${TMPDIR:-/tmp}/aidevops-gh-pr-view-cache-${$}"
+	fi
+	mkdir -p "$_GH_REST_PR_VIEW_CACHE_DIR" 2>/dev/null || return 1
+	printf '%s' "$_GH_REST_PR_VIEW_CACHE_DIR"
+	return 0
+}
+
+#######################################
+# Build a filesystem-safe REST PR view cache path for repo+PR.
+# Args: $1=repo_slug $2=pr_number
+# Returns: path on stdout; 0 on success, 1 on mkdir failure.
+#######################################
+_rest_pr_view_cache_path() {
+	local repo="$1"
+	local num="$2"
+	local dir=""
+	dir="$(_rest_pr_view_cache_dir)" || return 1
+	local safe_repo=""
+	safe_repo="$(printf '%s' "$repo" | tr '/: ' '___')"
+	printf '%s/%s__%s.json' "$dir" "$safe_repo" "$num"
+	return 0
+}
+
+#######################################
+# Emit a cached/raw REST PR object using gh-pr-view-compatible projection args.
+# Args: $1=raw_json $2=json_fields $3=jq_expr
+# Returns: jq exit code, or 0 for raw output.
+#######################################
+_rest_pr_view_emit_json() {
+	local raw_json="$1"
+	local json_fields="$2"
+	local jq_expr="$3"
+	if [[ -n "$json_fields" ]]; then
+		jq_expr="$(_rest_pr_object_json_jq "$json_fields" "$jq_expr")"
+	fi
+	if [[ -n "$jq_expr" ]]; then
+		printf '%s\n' "$raw_json" | jq -r "$jq_expr"
+		return $?
+	fi
+	printf '%s\n' "$raw_json"
+	return 0
+}
 
 #######################################
 # Execute a gh api command with optional wall-clock timeout (t2913).
@@ -132,6 +202,24 @@ _rest_append_sig() {
 }
 
 #######################################
+# Emit one REST helper output line while tolerating early-closing consumers.
+#
+# Pulse prefetch/list callers may pipe REST fallback output into consumers that
+# intentionally exit after the first match. Bash's printf reports EPIPE as noisy
+# "Broken pipe" stderr output unless stderr is suppressed at the emit site.
+# Return 1 so callers can stop emitting without treating the closed pipe as a
+# legitimate REST fallback failure.
+#
+# Args: $1=line
+# Returns: 0 when emitted, 1 when the output pipe is closed.
+#######################################
+_rest_emit_line() {
+	local _line="$1"
+	printf '%s\n' "$_line" 2>/dev/null || return 1
+	return 0
+}
+
+#######################################
 # _rest_split_csv: portable CSV tokeniser. Emits one token per line to stdout.
 #
 # Works in bash 3.2+, zsh 5+, and BusyBox ash — uses POSIX parameter
@@ -154,10 +242,10 @@ _rest_split_csv() {
 	local _delim="${2:-,}"
 	while [[ -n "$_str" ]]; do
 		if [[ "$_str" == *"$_delim"* ]]; then
-			printf '%s\n' "${_str%%"$_delim"*}"
+			_rest_emit_line "${_str%%"$_delim"*}" || break
 			_str="${_str#*"$_delim"}"
 		else
-			printf '%s\n' "$_str"
+			_rest_emit_line "$_str" || break
 			_str=""
 		fi
 	done
@@ -202,6 +290,11 @@ _rest_should_fallback() {
 		else
 			remaining=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null)
 		fi
+	fi
+	# When the rate_limit query itself fails, remaining is empty. Treat that as
+	# exhausted so supported calls can move to REST instead of skipping fallback.
+	if [[ -z "$remaining" ]]; then
+		return 0
 	fi
 	[[ "$remaining" =~ ^[0-9]+$ ]] || return 1
 	_GH_LAST_GRAPHQL_REMAINING="$remaining"
@@ -937,7 +1030,6 @@ _rest_issue_object_json_jq() {
 # Returns the underlying gh api exit code.
 #######################################
 _rest_pr_view() {
-	gh_record_call rest _rest_pr_view 2>/dev/null || true
 	local num_or_url=""
 	local repo=""
 	local jq_expr=""
@@ -974,8 +1066,48 @@ _rest_pr_view() {
 		return 1
 	fi
 
+	local cache_path=""
+	local raw_json=""
+	if _rest_pr_view_cache_enabled; then
+		cache_path="$(_rest_pr_view_cache_path "$repo" "$num")" || cache_path=""
+		if [[ -n "$cache_path" && -s "$cache_path" ]]; then
+			raw_json="$(jq -c '.' "$cache_path" 2>/dev/null)" || raw_json=""
+			if [[ -n "$raw_json" ]]; then
+				_rest_pr_view_emit_json "$raw_json" "$json_fields" "$jq_expr"
+				return $?
+			fi
+		fi
+	fi
+
+	gh_record_call rest _rest_pr_view 2>/dev/null || true
 	local _path="/repos/${repo}/pulls/${num}"
 	local _gh_cmd=(gh api "$_path")
+	if [[ -n "$cache_path" ]]; then
+		raw_json="$(_rest_api_call read "${_gh_cmd[@]}")"
+		local _rc=$?
+		if [[ $_rc -ne 0 ]]; then
+			return $_rc
+		fi
+		local _tmp_cache="${cache_path}.tmp.$$"
+		if printf '%s\n' "$raw_json" >"$_tmp_cache"; then
+			:
+		else
+			_rc=$?
+			printf '_rest_pr_view: failed to write temporary cache file: %s\n' "$_tmp_cache" >&2
+			rm -f "$_tmp_cache"
+			return $_rc
+		fi
+		if mv "$_tmp_cache" "$cache_path"; then
+			:
+		else
+			_rc=$?
+			printf '_rest_pr_view: failed to move temporary cache file %s to cache path: %s\n' "$_tmp_cache" "$cache_path" >&2
+			rm -f "$_tmp_cache"
+			return $_rc
+		fi
+		_rest_pr_view_emit_json "$raw_json" "$json_fields" "$jq_expr"
+		return $?
+	fi
 	if [[ -n "$json_fields" ]]; then
 		jq_expr="$(_rest_pr_object_json_jq "$json_fields" "$jq_expr")"
 	fi
@@ -993,7 +1125,12 @@ _rest_pr_object_json_jq() {
 		[[ -z "$field" ]] && continue
 		case "$field" in
 		number) projection="${projection}${projection:+,}number: .number" ;;
-		state) projection="${projection}${projection:+,}state: .state" ;;
+		state) projection="${projection}${projection:+,}state: (if (.merged_at != null or .merged == true) then \"MERGED\" else (.state // \"\" | ascii_upcase) end)" ;;
+		merged) projection="${projection}${projection:+,}merged: (.merged == true or .merged_at != null)" ;;
+		mergedAt) projection="${projection}${projection:+,}mergedAt: .merged_at" ;;
+		closedAt) projection="${projection}${projection:+,}closedAt: .closed_at" ;;
+		mergeCommit) projection="${projection}${projection:+,}mergeCommit: (if (.merge_commit_sha // \"\") != \"\" then {oid: .merge_commit_sha} else null end)" ;;
+		mergedBy) projection="${projection}${projection:+,}mergedBy: .merged_by" ;;
 		mergeable) projection="${projection}${projection:+,}mergeable: (.mergeable | if . == true then \"MERGEABLE\" elif . == false then \"CONFLICTING\" else (. // \"UNKNOWN\") end)" ;;
 		reviewDecision) projection="${projection}${projection:+,}reviewDecision: (.reviewDecision // \"\")" ;;
 		isDraft) projection="${projection}${projection:+,}isDraft: (.draft // false)" ;;
@@ -1032,13 +1169,14 @@ _rest_pr_object_json_jq() {
 _rest_pr_list_json_jq() {
 	local fields="$1"
 	local user_jq="$2"
+	local source_filter="${3:-.}"
 	local projection=""
 	local field=""
 	while IFS= read -r field; do
 		[[ -z "$field" ]] && continue
 		case "$field" in
 		number) projection="${projection}${projection:+,}number: .number" ;;
-		state) projection="${projection}${projection:+,}state: .state" ;;
+		state) projection="${projection}${projection:+,}state: (if .merged_at != null then \"MERGED\" else .state end)" ;;
 		mergeable) projection="${projection}${projection:+,}mergeable: (.mergeable | if . == true then \"MERGEABLE\" elif . == false then \"CONFLICTING\" else (. // \"UNKNOWN\") end)" ;;
 		reviewDecision) projection="${projection}${projection:+,}reviewDecision: (.reviewDecision // \"\")" ;;
 		isDraft) projection="${projection}${projection:+,}isDraft: (.draft // false)" ;;
@@ -1058,7 +1196,7 @@ _rest_pr_list_json_jq() {
 		esac
 	done < <(_rest_split_csv "$fields")
 	[[ -z "$projection" ]] && projection="number: .number"
-	local jq_expr="[.[] | {${projection}}]"
+	local jq_expr="${source_filter} | [.[] | {${projection}}]"
 	[[ -n "$user_jq" ]] && jq_expr="${jq_expr} | ${user_jq}"
 	printf '%s' "$jq_expr"
 	return 0
@@ -1073,6 +1211,8 @@ _rest_pr_list() {
 	local json_fields=""
 	local head_branch=""
 	local base_branch=""
+	local rest_state=""
+	local source_filter="."
 
 	while [[ $# -gt 0 ]]; do
 		local _arg="$1"
@@ -1102,7 +1242,13 @@ _rest_pr_list() {
 		return 1
 	fi
 
-	local _query="state=${state}&per_page=${limit}"
+	rest_state="$state"
+	if [[ "$state" == "merged" ]]; then
+		rest_state="closed"
+		source_filter='map(select(.merged_at != null))'
+	fi
+
+	local _query="state=${rest_state}&per_page=${limit}"
 	if [[ -n "$head_branch" ]]; then
 		local _head_encoded
 		if [[ "$head_branch" != *:* ]]; then
@@ -1120,7 +1266,13 @@ _rest_pr_list() {
 	local _path="/repos/${repo}/pulls?${_query}"
 	local _gh_cmd=(gh api "$_path")
 	if [[ -n "$json_fields" ]]; then
-		jq_expr="$(_rest_pr_list_json_jq "$json_fields" "$jq_expr")"
+		jq_expr="$(_rest_pr_list_json_jq "$json_fields" "$jq_expr" "$source_filter")"
+	elif [[ "$source_filter" != "." ]]; then
+		if [[ -n "$jq_expr" ]]; then
+			jq_expr="${source_filter} | ${jq_expr}"
+		else
+			jq_expr="$source_filter"
+		fi
 	fi
 	[[ -n "$jq_expr" ]] && _gh_cmd+=(--jq "$jq_expr")
 	_rest_api_call read "${_gh_cmd[@]}"
@@ -1167,7 +1319,10 @@ _rest_issue_list_json_jq() {
 		esac
 	done < <(_rest_split_csv "$fields")
 	[[ -z "$projection" ]] && projection="number: .number"
-	local jq_expr="[.[] | {${projection}}]"
+	# GH#23442: /repos/{owner}/{repo}/issues returns issues and pull requests;
+	# gh issue list returns issues only. Preserve gh-compatible semantics in the
+	# REST fallback so dispatch candidate enumeration cannot surface PR targets.
+	local jq_expr="[.[] | select(.pull_request == null) | {${projection}}]"
 	[[ -n "$user_jq" ]] && jq_expr="${jq_expr} | ${user_jq}"
 	printf '%s' "$jq_expr"
 	return 0

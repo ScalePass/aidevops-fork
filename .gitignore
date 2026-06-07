@@ -56,6 +56,11 @@ authorized_keys
 
 # Exception for worker token helper (manages tokens, doesn't contain them)
 !.agents/scripts/worker-token-helper.sh
+!.agents/scripts/report-token-use-helper.sh
+!.agents/scripts/report-token-use-helper.py
+!.agents/scripts/report_token_use_render.py
+!.agents/scripts/commands/report-token-use.md
+!.agents/scripts/tests/test-report-token-use-helper.sh
 !.agents/secretlint.md
 
 # Exception for credential/secret management scripts (not actual credentials)
@@ -181,6 +186,8 @@ tmp.*.json
 # Analysis reports and results
 *.sarif
 reports/
+!.agents/reports/
+!.agents/reports/*.md
 .scannerwork/
 .playwright-cli/
 
@@ -266,6 +273,10 @@ _knowledge/index/
 _campaigns/intel/
 _campaigns/active/
 _campaigns/index/
+_reports/drafts/
+_reports/published/
+_reports/index/
+_reports/_config/
 _inbox/*
 !_inbox/README.md
 !_inbox/.gitignore

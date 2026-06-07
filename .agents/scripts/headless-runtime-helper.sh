@@ -290,20 +290,29 @@ _ensure_valid_launch_cwd() {
 	return 1
 }
 
-# _run_looks_like_issue_worker: detect issue-scoped worker dispatches from
-# independent caller-owned signals. The env contract is only mandatory for
-# issue workers; pulse/non-issue runs keep the historical path.
-_run_looks_like_issue_worker() {
+# _run_requires_issue_env_contract: detect issue-scoped worker and triage
+# dispatches from independent caller-owned signals. The env contract is only
+# mandatory for issue-scoped runs; pulse/non-issue runs keep the historical path.
+_run_requires_issue_env_contract() {
 	local role_value="$1"
 	local session_key_value="$2"
 	local title_value="$3"
 	local prompt_value="$4"
 
-	[[ "$role_value" == "worker" ]] || return 1
+	case "$role_value" in
+		worker | triage) ;;
+		*) return 1 ;;
+	esac
 	if [[ "$session_key_value" =~ ^issue-[0-9]+$ ]]; then
 		return 0
 	fi
+	if [[ "$session_key_value" =~ ^triage-review-[0-9]+$ ]]; then
+		return 0
+	fi
 	if [[ "$title_value" =~ ^Issue[[:space:]]+#[0-9]+ ]]; then
+		return 0
+	fi
+	if [[ "$title_value" =~ Issue[[:space:]]+#[0-9]+ ]]; then
 		return 0
 	fi
 	if [[ "$prompt_value" =~ [Ii]ssue[[:space:]]*#?[0-9]+ ]]; then
@@ -322,12 +331,16 @@ _validate_issue_worker_env_contract() {
 	local title_value="$4"
 	local prompt_value="$5"
 
-	if ! _run_looks_like_issue_worker "$role_value" "$session_key_value" "$title_value" "$prompt_value"; then
+	if ! _run_requires_issue_env_contract "$role_value" "$session_key_value" "$title_value" "$prompt_value"; then
 		return 0
 	fi
 
 	if [[ -z "${WORKER_ISSUE_NUMBER:-}" ]]; then
 		print_error "[fatal] WORKER_ISSUE_NUMBER unset — issue worker env contract missing; aborting before model launch"
+		return 1
+	fi
+	if [[ -z "${WORKER_REPO_SLUG:-}" ]]; then
+		print_error "[fatal] WORKER_REPO_SLUG unset — issue worker env contract missing; aborting before model launch"
 		return 1
 	fi
 	if [[ -z "${WORKER_WORKTREE_PATH:-}" ]]; then
@@ -348,15 +361,13 @@ _validate_issue_worker_env_contract() {
 		return 1
 	fi
 
-	if [[ -n "${WORKER_REPO_SLUG:-}" ]]; then
-		local remote_url=""
-		local actual_slug=""
-		remote_url=$(git -C "$WORKER_WORKTREE_PATH" remote get-url origin 2>/dev/null) || remote_url=""
-		actual_slug=$(printf '%s' "$remote_url" | sed 's|.*github\.com[:/]||;s|\.git$||') || actual_slug=""
-		if [[ -z "$actual_slug" || "$actual_slug" != "$WORKER_REPO_SLUG" ]]; then
-			print_error "[fatal] worker worktree repo mismatch: expected ${WORKER_REPO_SLUG}, got ${actual_slug:-<unknown>}"
-			return 1
-		fi
+	local remote_url=""
+	local actual_slug=""
+	remote_url=$(git -C "$WORKER_WORKTREE_PATH" remote get-url origin 2>/dev/null) || remote_url=""
+	actual_slug=$(printf '%s' "$remote_url" | sed 's|.*github\.com[:/]||;s|\.git$||') || actual_slug=""
+	if [[ -z "$actual_slug" || "$actual_slug" != "$WORKER_REPO_SLUG" ]]; then
+		print_error "[fatal] worker worktree repo mismatch: expected ${WORKER_REPO_SLUG}, got ${actual_slug:-<unknown>}"
+		return 1
 	fi
 
 	return 0
@@ -465,6 +476,11 @@ _invoke_opencode() {
 		# fires while _invoke_opencode is still waiting for the worker.
 		_WORKER_ISOLATED_DB_PATH="${isolated_data_dir}/opencode/opencode.db"
 		print_info "[lifecycle] db_isolated dir=$isolated_data_dir pid=$$"
+		_sync_worker_db_migration_metadata "$isolated_data_dir"
+		if [[ -n "${_invoke_persisted_session:-}" ]]; then
+			_seed_worker_db_session_context "$isolated_data_dir" "$_invoke_persisted_session"
+			print_info "[lifecycle] db_seeded session=$_invoke_persisted_session pid=$$"
+		fi
 
 		# t2249: Pre-dispatch OAuth pool check. If the account copied into the
 		# isolated auth.json is in cooldown per shared pool metadata (recorded
@@ -1061,7 +1077,7 @@ _derive_worker_failure_evidence() {
 		launch_failure_cause="model_stopped_before_completion"
 		next_action="resume_session_with_completion_contract"
 		;;
-	watchdog_stall_continue | service_interruption_continue | signal_killed_continue)
+	watchdog_stall_continue | service_interruption_continue | service_interruption_exhausted | signal_killed_continue)
 		launch_failure_cause="mid_session_interruption"
 		next_action="resume_existing_session"
 		;;
@@ -1106,6 +1122,43 @@ _derive_worker_failure_evidence() {
 	fi
 
 	printf '%s\t%s' "$launch_failure_cause" "$next_action"
+	return 0
+}
+
+#######################################
+# Append a context-rich metric when service-interruption continuation budget is exhausted.
+#
+# Args:
+#   $1 - role
+#   $2 - session key
+#   $3 - selected model
+#   $4 - work dir
+#   $5 - failure reason
+#   $6 - output excerpt path
+#   $7 - session id
+# Returns: 0 always (observability must fail open)
+#######################################
+_append_service_interruption_exhausted_metric() {
+	local role="$1"
+	local session_key="$2"
+	local selected_model="$3"
+	local work_dir="$4"
+	local failure_reason="$5"
+	local output_file="$6"
+	local session_id="$7"
+	local result_label="service_interruption_exhausted"
+	local provider
+	provider=$(extract_provider "$selected_model")
+	local evidence_fields launch_failure_cause next_action
+	evidence_fields=$(_derive_worker_failure_evidence "$result_label" "81" "1" "" "$failure_reason")
+	launch_failure_cause="${evidence_fields%%$'\t'*}"
+	next_action="${evidence_fields#*$'\t'}"
+	append_runtime_metric "$role" "$session_key" "$selected_model" \
+		"$provider" \
+		"$result_label" "81" "${failure_reason:-provider_error}" "1" "0" \
+		"${WORKER_ISSUE_NUMBER:-}" "${DISPATCH_REPO_SLUG:-}" "$work_dir" "$output_file" "$session_id" \
+		"${_run_provider_error_type:-}" "${_run_provider_status:-}" "${_run_runtime_error_type:-}" "${_run_classification_source:-}" "${_run_classification_pattern:-}" \
+		"$launch_failure_cause" "${_metric_kill_reason:-}" "$next_action"
 	return 0
 }
 
@@ -1241,6 +1294,9 @@ _execute_run_attempt() {
 	# dispatch rotation against their own pool entries. Same rationale as
 	# _invoke_session_key above: keep _invoke_opencode's arg list stable.
 	_invoke_provider="$provider"
+	# GH#23958: expose the persisted OpenCode session to _invoke_opencode so
+	# isolated worker DBs can be seeded before --session <id> --continue runs.
+	_invoke_persisted_session="$persisted_session"
 
 	# t3077: expose session_key to the verbose lifecycle emitter via the
 	# convention WORKER_SESSION_KEY (read by _emit_verbose_checkpoint).
@@ -1457,6 +1513,8 @@ _execute_run_attempt() {
 	else
 		handle_exit=$?
 	fi
+	_run_metric_output_file="$_metric_output_file"
+	_run_metric_session_id="$_metric_session_id"
 	print_info "[lifecycle] handle_run_result_returned session=$session_key handle_exit=$handle_exit result_label=${_run_result_label:-unknown}"
 	end_ms=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null || printf '%s' "0")
 	if [[ "$end_ms" =~ ^[0-9]+$ && "$start_ms" =~ ^[0-9]+$ && "$end_ms" -ge "$start_ms" ]]; then
@@ -1533,19 +1591,32 @@ _discover_actual_worktree_dir() {
 # =============================================================================
 
 cmd_run() {
-	local role="worker"
-	local session_key=""
-	local work_dir=""
-	local title=""
-	local prompt=""
-	local prompt_file=""
-	local model_override=""
-	local initial_model=""
-	local tier_override=""
-	local variant_override=""
-	local agent_name=""
-	local headless_runtime=""
-	local detach=0
+	local role
+	role="worker"
+	local session_key
+	session_key=""
+	local work_dir
+	work_dir=""
+	local title
+	title=""
+	local prompt
+	prompt=""
+	local prompt_file
+	prompt_file=""
+	local model_override
+	model_override=""
+	local initial_model
+	initial_model=""
+	local tier_override
+	tier_override=""
+	local variant_override
+	variant_override=""
+	local agent_name
+	agent_name=""
+	local headless_runtime
+	headless_runtime=""
+	local detach
+	detach=0
 	local -a extra_args=()
 
 	_parse_run_args "$@" || return 1
@@ -1559,12 +1630,33 @@ cmd_run() {
 		return 0
 	fi
 
+	if [[ "$role" == "worker" ]]; then
+		# GH#23520: publish canonical worker-origin markers before canary,
+		# sandbox passthrough, and downstream GitHub/signature helpers run.
+		# The sandbox allowlist already forwards AIDEVOPS_*; legacy generic
+		# HEADLESS/FULL_LOOP_HEADLESS markers are intentionally not required
+		# past the clean-env boundary.
+		local _worker_session_origin
+		_worker_session_origin="${AIDEVOPS_SESSION_ORIGIN:-worker}"
+		local AIDEVOPS_SESSION_ORIGIN
+		AIDEVOPS_SESSION_ORIGIN="$_worker_session_origin"
+		export AIDEVOPS_SESSION_ORIGIN
+		local _worker_headless_marker
+		_worker_headless_marker="${AIDEVOPS_HEADLESS:-true}"
+		local AIDEVOPS_HEADLESS
+		AIDEVOPS_HEADLESS="$_worker_headless_marker"
+		export AIDEVOPS_HEADLESS
+	fi
+
+	print_info "[lifecycle] pre_model_select session=$session_key role=$role tier=${tier_override:-auto} pid=$$"
 	local selected_model
+	local choose_exit
 	selected_model=$(choose_model "$role" "${model_override:-$initial_model}" "$tier_override") || {
-		local choose_exit=$?
+		choose_exit=$?
 		_cmd_run_finish "$session_key" "fail"
 		return "$choose_exit"
 	}
+	print_info "[lifecycle] post_model_select session=$session_key model=$selected_model pid=$$"
 
 	# GH#17549: Version guard — runs on EVERY dispatch (not cached).
 	# Something keeps upgrading opencode to 1.3.17 between canary checks.
@@ -1574,10 +1666,12 @@ cmd_run() {
 	# _cmd_run_prepare so a canary failure never posts a dispatch claim or
 	# increments the fast-fail counter. Cached for CANARY_CACHE_TTL_SECONDS
 	# (default 30 min) so it runs at most once per pulse cycle.
+	print_info "[lifecycle] pre_canary session=$session_key model=$selected_model pid=$$"
 	if ! _run_canary_test "$selected_model"; then
 		print_warning "Canary failed — aborting dispatch for session $session_key (no claim posted)"
 		return 1
 	fi
+	print_info "[lifecycle] post_canary session=$session_key model=$selected_model pid=$$"
 
 	if [[ "$role" == "worker" ]]; then
 		prompt=$(append_worker_headless_contract "$prompt")
@@ -1587,7 +1681,9 @@ cmd_run() {
 	# the EXIT trap is armed) so it is always available to _release_dispatch_claim.
 	# _cmd_run_prepare is called immediately below; the export no longer needs to
 	# live in _execute_run_attempt (which runs after the trap is already set).
-	local prepare_exit=0
+	local prepare_exit
+	prepare_exit=0
+	print_info "[lifecycle] pre_worker_prepare session=$session_key work_dir=$work_dir pid=$$"
 	_cmd_run_prepare "$session_key" "$work_dir" || prepare_exit=$?
 	if [[ "$prepare_exit" -eq 2 ]]; then
 		return 0
@@ -1595,6 +1691,7 @@ cmd_run() {
 	if [[ "$prepare_exit" -ne 0 ]]; then
 		return "$prepare_exit"
 	fi
+	print_info "[lifecycle] post_worker_prepare session=$session_key work_dir=$work_dir pid=$$"
 
 	if [[ -z "$variant_override" ]]; then
 		variant_override=$(resolve_headless_variant "$role" "$tier_override" "$selected_model")
@@ -1641,6 +1738,8 @@ cmd_run() {
 	local _run_should_retry=0
 	local _run_result_label="failed"
 	local _run_activity_detected="0"
+	local _run_metric_output_file=""
+	local _run_metric_session_id=""
 	while [[ "$attempt" -le "$max_attempts" ]]; do
 		_run_failure_reason=""
 		_run_should_retry=0
@@ -1694,9 +1793,10 @@ cmd_run() {
 
 			local _sic_exhausted_label="service_interruption_exhausted"
 			_run_result_label="$_sic_exhausted_label"
-			append_runtime_metric "$role" "$session_key" "$selected_model" \
-				"$(extract_provider "$selected_model")" \
-				"$_run_result_label" "81" "${_run_failure_reason:-provider_error}" "1" "0"
+			_append_service_interruption_exhausted_metric \
+				"$role" "$session_key" "$selected_model" "$work_dir" \
+				"${_run_failure_reason:-provider_error}" \
+				"${_run_metric_output_file:-}" "${_run_metric_session_id:-}"
 			print_warning "Exhausted ${max_service_interruption_continue_retries} service-interruption continuations — falling through to normal failure handling"
 		fi
 
@@ -1881,12 +1981,12 @@ show_help() {
 headless-runtime-helper.sh - Model-aware headless runtime (OpenCode default, Claude CLI opt-in)
 
 Usage:
-  headless-runtime-helper.sh select [--role pulse|worker] [--model provider/model]
-  headless-runtime-helper.sh canary [--role pulse|worker] [--model provider/model] [--tier haiku|sonnet|opus|...]
-  headless-runtime-helper.sh run --role pulse|worker --session-key KEY --dir PATH --title TITLE (--prompt TEXT | --prompt-file FILE) [--model provider/model | --initial-model provider/model] [--tier haiku|sonnet|opus|...] [--variant NAME] [--agent NAME] [--runtime opencode|claude] [--opencode-arg ARG] [--detach]
+  headless-runtime-helper.sh select [--role pulse|worker|triage] [--model provider/model]
+  headless-runtime-helper.sh canary [--role pulse|worker|triage] [--model provider/model] [--tier haiku|sonnet|opus|...]
+  headless-runtime-helper.sh run --role pulse|worker|triage --session-key KEY --dir PATH --title TITLE (--prompt TEXT | --prompt-file FILE) [--model provider/model | --initial-model provider/model] [--tier haiku|sonnet|opus|...] [--variant NAME] [--agent NAME] [--runtime opencode|claude] [--opencode-arg ARG] [--detach]
   headless-runtime-helper.sh backoff [status|set MODEL-OR-PROVIDER REASON [SECONDS]|clear MODEL-OR-PROVIDER]
   headless-runtime-helper.sh session [status|clear PROVIDER SESSION_KEY]
-  headless-runtime-helper.sh metrics [--role pulse|worker] [--hours N] [--model SUBSTRING] [--fast-threshold N]
+  headless-runtime-helper.sh metrics [--role pulse|worker|triage] [--hours N] [--model SUBSTRING] [--fast-threshold N]
   headless-runtime-helper.sh help
 
 Runtime selection:

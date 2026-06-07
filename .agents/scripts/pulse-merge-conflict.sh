@@ -46,9 +46,9 @@ _PULSE_MERGE_CONFLICT_LOADED=1
 : "${LOGFILE:=${HOME}/.aidevops/logs/pulse.log}"
 
 # t2948: Idle interactive PR handover threshold in seconds (default 4h).
-# Override via IDLE_INTERACTIVE_HANDOVER_SECONDS env var.
+# Override via AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS env var.
 # See _interactive_pr_is_stale / _interactive_pr_trigger_handover.
-: "${IDLE_INTERACTIVE_HANDOVER_SECONDS:=14400}"
+: "${AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS:=${IDLE_INTERACTIVE_HANDOVER_SECONDS:-14400}}"
 
 #######################################
 # GH#18650 (Fix 4): Post a one-time rebase nudge on an origin:interactive
@@ -206,7 +206,7 @@ Every pulse cycle the deterministic merge pass evaluates open PRs with merge con
 #      in-review, claimed) — an active status means a human is driving it
 #   3. No live claim stamp file in $CLAIM_STAMP_DIR for the linked issue
 #      (session is gone; no interactive-session-helper.sh claim active)
-#   4. PR updatedAt older than IDLE_INTERACTIVE_HANDOVER_SECONDS (default 14400 = 4h)
+#   4. PR updatedAt older than AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS (default 14400 = 4h)
 #   5. Linked issue is open (don't touch PRs whose issue was already closed)
 #
 # Env controls:
@@ -214,23 +214,29 @@ Every pulse cycle the deterministic merge pass evaluates open PRs with merge con
 #     off:     returns 1 unconditionally (feature disabled)
 #     detect:  evaluates signal and logs would-handover decisions; still returns signal
 #     enforce: evaluates signal and returns it; caller acts
-#   IDLE_INTERACTIVE_HANDOVER_SECONDS — age threshold seconds, default 14400 (4h; t2948)
+#   AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS — age threshold seconds, default 14400 (4h; t2948)
 #
-# Args: $1 = pr_number, $2 = repo_slug
+# Args: $1 = pr_number, $2 = repo_slug, $3 = updated_at (optional),
+#       $4 = head_ref_oid (optional), $5 = head_commit_at (optional)
 # Returns: 0 if stale (handover-eligible), 1 otherwise
 # Side effect: logs "would-handover" line to $LOGFILE when mode=detect and stale
 #######################################
 _interactive_pr_is_stale() {
 	local pr_number="$1"
 	local repo_slug="$2"
+	local precomputed_updated_at="${3:-}"
+	local precomputed_head_ref_oid="${4:-}"
+	local precomputed_head_commit_at="${5:-}"
 	local mode="${AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE:-detect}"
 	[[ "$mode" == "off" ]] && return 1
 	[[ "$pr_number" =~ ^[0-9]+$ && -n "$repo_slug" ]] || return 1
 
-	# Fetch PR metadata once
-	local pr_meta
+	# Fetch PR metadata once. updatedAt can prove staleness without an extra
+	# commit lookup; fresh updatedAt still falls through to the head commit
+	# timestamp because automated comments/labels can mask an idle branch.
+	local pr_meta=""
 	pr_meta=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json labels,updatedAt 2>/dev/null) || return 1
+		--json labels,updatedAt,headRefOid 2>/dev/null) || return 1
 
 	# Gate 1: must have origin:interactive
 	printf '%s' "$pr_meta" | jq -e \
@@ -246,23 +252,59 @@ _interactive_pr_is_stale() {
 		return 1
 	fi
 
-	# Gate 4: age threshold (check before any other gh calls — cheapest filter)
-	local threshold_secs="${IDLE_INTERACTIVE_HANDOVER_SECONDS:-14400}"  # default 4h (t2948; was 24h)
-	local updated_at="" now_epoch=0 updated_epoch=0 pr_age_secs=0
+	# Gate 4: age threshold (check updatedAt before commit lookup — cheapest filter)
+	local threshold_secs="${AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS:-${IDLE_INTERACTIVE_HANDOVER_SECONDS:-14400}}"  # default 4h (t2948; was 24h)
+	local activity_at="" activity_source="updatedAt" now_epoch=0 updated_epoch=0 pr_age_secs=0
 	# t2383 Fix 2: validate threshold is a positive integer before arithmetic.
 	# A non-numeric value (e.g. "4h", empty, negative) triggers bash
 	# "value too great for base" and silently breaks stale detection.
 	if [[ ! "$threshold_secs" =~ ^[0-9]+$ ]] || [[ "$threshold_secs" -eq 0 ]]; then
-		echo "[pulse-wrapper] _interactive_pr_is_stale: invalid IDLE_INTERACTIVE_HANDOVER_SECONDS='${threshold_secs}' — must be a positive integer, returning not-stale (t2383)" >>"$LOGFILE"
+		echo "[pulse-wrapper] _interactive_pr_is_stale: invalid AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS='${threshold_secs}' — must be a positive integer, returning not-stale (t2383)" >>"$LOGFILE"
 		return 1
 	fi
-	updated_at=$(printf '%s' "$pr_meta" | jq -r '.updatedAt // empty')
+	local updated_at=""
+	updated_at="$precomputed_updated_at"
+	if [[ -z "$updated_at" ]]; then
+		updated_at=$(printf '%s' "$pr_meta" | jq -r '.updatedAt // empty')
+	fi
 	[[ -z "$updated_at" ]] && return 1
 	now_epoch=$(date +%s)
 	# Portable epoch parse — GNU date first (Linux CI), BSD date fallback (macOS)
 	updated_epoch=$(date -d "$updated_at" +%s 2>/dev/null) || \
 		updated_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$updated_at" +%s 2>/dev/null) || \
 		return 1
+	pr_age_secs=$(( now_epoch - updated_epoch ))
+	if [[ "$pr_age_secs" -ge "$threshold_secs" ]]; then
+		activity_at="$updated_at"
+		activity_source="updatedAt"
+	else
+		pr_age_secs=0
+	fi
+
+	local head_ref_oid=""
+	if [[ -z "$activity_at" ]]; then
+		head_ref_oid="$precomputed_head_ref_oid"
+		if [[ -z "$head_ref_oid" ]]; then
+			head_ref_oid=$(printf '%s' "$pr_meta" | jq -r '.headRefOid // empty')
+		fi
+	fi
+	if [[ -n "$head_ref_oid" ]]; then
+		if [[ -z "$activity_at" && -n "$precomputed_head_commit_at" ]]; then
+			activity_at="$precomputed_head_commit_at"
+			activity_source="head_commit"
+		fi
+		if [[ -z "$activity_at" ]]; then
+			activity_at=$(gh api "repos/${repo_slug}/commits/${head_ref_oid}" \
+				--jq '.commit.committer.date // .commit.author.date // empty' 2>/dev/null) || activity_at=""
+			[[ -n "$activity_at" ]] && activity_source="head_commit"
+		fi
+	fi
+	[[ -z "$activity_at" ]] && return 1
+	if [[ "$activity_at" != "$updated_at" ]]; then
+		updated_epoch=$(date -d "$activity_at" +%s 2>/dev/null) || \
+			updated_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$activity_at" +%s 2>/dev/null) || \
+			return 1
+	fi
 	pr_age_secs=$(( now_epoch - updated_epoch ))
 	[[ "$pr_age_secs" -lt "$threshold_secs" ]] && return 1
 
@@ -288,7 +330,7 @@ _interactive_pr_is_stale() {
 
 	# All gates passed — PR is stale. Log in detect mode.
 	if [[ "$mode" == "detect" ]]; then
-		echo "[pulse-wrapper] would-handover: PR #${pr_number} in ${repo_slug} (idle $((pr_age_secs / 3600))h >= $((threshold_secs / 3600))h, linked issue #${linked_issue})" >>"$LOGFILE"
+		echo "[pulse-wrapper] would-handover: PR #${pr_number} in ${repo_slug} (idle $((pr_age_secs / 3600))h via ${activity_source} >= $((threshold_secs / 3600))h, linked issue #${linked_issue})" >>"$LOGFILE"
 	fi
 	return 0
 }
@@ -353,7 +395,7 @@ _interactive_pr_trigger_handover() {
 	# Post one-time handover comment via _gh_idempotent_comment
 	if declare -F _gh_idempotent_comment >/dev/null 2>&1; then
 		local marker="<!-- pulse-interactive-handover -->"
-		local threshold_h=$(( ${IDLE_INTERACTIVE_HANDOVER_SECONDS:-14400} / 3600 ))
+		local threshold_h=$(( ${AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS:-${IDLE_INTERACTIVE_HANDOVER_SECONDS:-14400}} / 3600 ))
 		local body
 		body="${marker}
 ## Worker takeover — no interactive session activity for ${threshold_h}h
@@ -802,6 +844,56 @@ _close_conflicting_pr_check_ownership_guard() {
 	echo "[pulse-wrapper] Deterministic merge: skipping auto-close of PR #${pr_number} in ${repo_slug} — non-bot author @${author_login} without pulse origin label; contributor work is never auto-closed (GH#20485)" >>"$LOGFILE"
 	_post_rebase_nudge_on_contributor_conflicting "$pr_number" "$repo_slug"
 	return 0
+}
+
+#######################################
+# Fast pre-close guard for CONFLICTING PRs that are clearly protected.
+#
+# Uses the PR object already fetched by the merge pass, before the heavier
+# _close_conflicting_pr ownership metadata path. This avoids repeated noisy
+# metadata fetches for draft / interactive / contributor PRs that are never
+# eligible for auto-close.
+#
+# Args: $1=pr_number, $2=repo_slug, $3=pr_obj JSON from gh pr list
+# Returns:
+#   0 — caller must skip close-conflict handling
+#   1 — no protected signal found; caller may continue normal conflict flow
+#######################################
+_close_conflicting_pr_skip_protected_precheck() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local pr_obj="${3:-}"
+
+	local labels_csv=""
+	local is_draft="false"
+	if [[ -n "$pr_obj" ]]; then
+		labels_csv=$(printf '%s' "$pr_obj" \
+			| jq -r '[.labels[]?.name] | join(",")' 2>/dev/null) || labels_csv=""
+		is_draft=$(printf '%s' "$pr_obj" \
+			| jq -r '(.isDraft // false | tostring)' 2>/dev/null) || is_draft="false"
+	fi
+
+	if [[ "$is_draft" == "true" ]]; then
+		echo "[pulse-wrapper] Merge pass: skipping CONFLICTING-close of PR #${pr_number} in ${repo_slug} — draft PR is protected before close-conflict metadata fetch (GH#23371)" >>"$LOGFILE"
+		return 0
+	fi
+
+	case ",${labels_csv}," in
+	*,origin:interactive,*)
+		echo "[pulse-wrapper] Merge pass: skipping CONFLICTING-close of PR #${pr_number} in ${repo_slug} — origin:interactive PR is protected before close-conflict metadata fetch (GH#23371)" >>"$LOGFILE"
+		return 0
+		;;
+	*,no-auto-dispatch,*)
+		echo "[pulse-wrapper] Merge pass: skipping CONFLICTING-close of PR #${pr_number} in ${repo_slug} — no-auto-dispatch PR is protected before close-conflict metadata fetch (GH#23371)" >>"$LOGFILE"
+		return 0
+		;;
+	*,external-contributor,*)
+		echo "[pulse-wrapper] Merge pass: skipping CONFLICTING-close of PR #${pr_number} in ${repo_slug} — external-contributor PR is protected before close-conflict metadata fetch (GH#23371)" >>"$LOGFILE"
+		return 0
+		;;
+	esac
+
+	return 1
 }
 
 #######################################

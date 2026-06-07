@@ -105,6 +105,12 @@ AIDEVOPS_VERSION_FILE="${AIDEVOPS_VERSION_FILE:-${HOME}/.aidevops/agents/VERSION
 # waste API writes; small windows (<=5s) catch only genuine races.
 DISPATCH_TIEBREAKER_WINDOW="${DISPATCH_TIEBREAKER_WINDOW:-5}"
 
+# GH#24398: direct dispatch-claim-helper.sh callers must not post a
+# DISPATCH_CLAIM on top of another runner's active lifecycle assignment. Unit
+# tests that exercise the low-level claim protocol can opt out explicitly; the
+# dispatch-dedup-helper.sh wrapper always runs the guard before routing here.
+DISPATCH_CLAIM_ASSIGNMENT_GUARD="${DISPATCH_CLAIM_ASSIGNMENT_GUARD:-enabled}"
+
 # t2422: Source the structured override resolver so _override_resolve is
 # available to _apply_structured_filter below. The resolver is sourceable —
 # its main() is gated by BASH_SOURCE. If the resolver is missing (partial
@@ -117,6 +123,10 @@ fi
 if [[ -r "${DISPATCH_CLAIM_HELPER_DIR}/gh-signature-helper-detect.sh" ]]; then
 	# shellcheck source=gh-signature-helper-detect.sh
 	source "${DISPATCH_CLAIM_HELPER_DIR}/gh-signature-helper-detect.sh"
+fi
+if [[ -r "${DISPATCH_CLAIM_HELPER_DIR}/shared-repo-state-guard.sh" ]]; then
+	# shellcheck source=shared-repo-state-guard.sh
+	source "${DISPATCH_CLAIM_HELPER_DIR}/shared-repo-state-guard.sh"
 fi
 if [[ -r "${DISPATCH_CLAIM_HELPER_DIR}/dispatch-override-resolve.sh" ]]; then
 	# shellcheck disable=SC1091
@@ -232,6 +242,13 @@ _post_claim() {
 	local nonce="$4"
 	local ts="$5"
 	local reason_fields="${6:-}"
+
+	if declare -F aidevops_can_manage_repo_issue_state >/dev/null 2>&1; then
+		if ! aidevops_can_manage_repo_issue_state "$repo_slug" "$runner"; then
+			echo "CLAIM_SKIPPED: repo_state_not_managed issue=#${issue_number} repo=${repo_slug}" >&2
+			return 1
+		fi
+	fi
 
 	# t2401: include framework version so peers can filter claims from older runners.
 	local version
@@ -960,6 +977,54 @@ _post_deferred() {
 }
 
 #######################################
+# Fail-closed guard before posting a DISPATCH_CLAIM.
+# Args:
+#   $1 = issue number
+#   $2 = repo slug
+#   $3 = runner login
+# Returns:
+#   exit 0 = safe to post claim
+#   exit 1 = active assignment/guard block; do not post claim
+#######################################
+_guard_no_active_assignment_before_claim() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local runner="$3"
+
+	if [[ "$DISPATCH_CLAIM_ASSIGNMENT_GUARD" != "enabled" ]]; then
+		return 0
+	fi
+	if [[ "${AIDEVOPS_TEST_MODE:-}" == "1" && -z "${AIDEVOPS_FORCE_CLAIM_ASSIGNMENT_GUARD:-}" ]]; then
+		return 0
+	fi
+
+	local dedup_helper="${DISPATCH_CLAIM_HELPER_DIR}/dispatch-dedup-helper.sh"
+	if [[ ! -x "$dedup_helper" ]]; then
+		printf 'CLAIM_BLOCKED: assignment_guard_unavailable issue=#%s repo=%s helper=%s\n' \
+			"$issue_number" "$repo_slug" "$dedup_helper"
+		return 1
+	fi
+
+	local guard_output="" guard_rc=0
+	guard_output=$("$dedup_helper" is-assigned "$issue_number" "$repo_slug" "$runner" 2>&1) || guard_rc=$?
+	case "$guard_rc" in
+	0)
+		printf 'CLAIM_BLOCKED: active_assignment issue=#%s repo=%s runner=%s signal=%s\n' \
+			"$issue_number" "$repo_slug" "$runner" "$guard_output"
+		return 1
+		;;
+	1)
+		return 0
+		;;
+	*)
+		printf 'CLAIM_BLOCKED: assignment_guard_error issue=#%s repo=%s runner=%s rc=%s signal=%s\n' \
+			"$issue_number" "$repo_slug" "$runner" "$guard_rc" "$guard_output"
+		return 1
+		;;
+	esac
+}
+
+#######################################
 # Attempt to claim an issue for dispatch.
 #
 # Protocol:
@@ -996,6 +1061,17 @@ cmd_claim() {
 
 	local runner
 	runner=$(_resolve_runner "$runner_login") || runner="unknown"
+
+	if declare -F aidevops_can_manage_repo_issue_state >/dev/null 2>&1; then
+		if ! aidevops_can_manage_repo_issue_state "$repo_slug" "$runner"; then
+			echo "CLAIM_SKIPPED: repo_state_not_managed issue=#${issue_number} repo=${repo_slug} — not dispatching" >&2
+			return 1
+		fi
+	fi
+
+	if ! _guard_no_active_assignment_before_claim "$issue_number" "$repo_slug" "$runner"; then
+		return 1
+	fi
 
 	local nonce
 	nonce=$(_generate_nonce)
@@ -1140,6 +1216,14 @@ cmd_check() {
 	if [[ -z "$issue_number" || -z "$repo_slug" ]]; then
 		echo "Error: check requires <issue-number> <repo-slug>" >&2
 		return 2
+	fi
+
+	if declare -F aidevops_can_manage_repo_issue_state >/dev/null 2>&1; then
+		if ! aidevops_can_manage_repo_issue_state "$repo_slug"; then
+			printf 'CLAIM_SKIPPED: repo_state_not_managed issue=#%s repo=%s — treating as active to block dispatch\n' \
+				"$issue_number" "$repo_slug" >&2
+			return 0
+		fi
 	fi
 
 	local claims

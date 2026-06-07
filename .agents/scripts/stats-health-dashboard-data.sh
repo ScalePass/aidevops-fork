@@ -36,7 +36,35 @@ if [[ -z "${SCRIPT_DIR:-}" ]]; then
 	unset _lib_path
 fi
 
+# Distinct exit code emitted by contributor-activity-helper.sh when stdout
+# contains valid but incomplete data due to rate limits or timeouts. Reuse a
+# shared EX_PARTIAL value when the sourcing context already defines one.
+readonly STATS_HEALTH_EX_PARTIAL="${EX_PARTIAL:-75}"
+
+# Wall-clock guard for each dashboard person-stats helper invocation. The
+# helper already bounds individual GitHub API calls; this keeps the health
+# dashboard refresh from spending unbounded time across many contributors.
+: "${STATS_HEALTH_PERSON_STATS_TIMEOUT:=60}"
+
+# Wall-clock guard for dashboard Search API budget probes. These probes run
+# before optional person-stats helper calls, so they must not become a separate
+# unbounded blocking point when GitHub is slow.
+: "${STATS_HEALTH_PERSON_STATS_RATE_LIMIT_TIMEOUT:=10}"
+
 # --- Functions ---
+
+#######################################
+# Read remaining GitHub Search API budget with portable timeout protection.
+#
+# Output: remaining search requests, or 0 on timeout/failure
+#######################################
+_stats_health_person_stats_search_remaining() {
+	local remaining="0"
+	remaining=$(timeout_sec "$STATS_HEALTH_PERSON_STATS_RATE_LIMIT_TIMEOUT" gh api rate_limit --jq '.resources.search.remaining' 2>/dev/null) || remaining="0"
+	remaining="${remaining//[^0-9]/}"
+	printf '%s\n' "${remaining:-0}"
+	return 0
+}
 
 #######################################
 # Scan active headless worker processes for a repo.
@@ -873,13 +901,15 @@ _refresh_person_stats_cache() {
 	mkdir -p "$PERSON_STATS_CACHE_DIR"
 
 	local search_remaining
-	search_remaining=$(gh api rate_limit --jq '.resources.search.remaining' 2>/dev/null) || search_remaining=0
+	search_remaining=$(_stats_health_person_stats_search_remaining)
 
 	local repo_entries
 	repo_entries=$(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false and .slug != "") | "\(.slug)|\(.path)"' "$repos_json" 2>/dev/null || echo "")
 
 	local repo_count=0
 	local search_api_cost_per_contributor=4
+	local partial_exit="$STATS_HEALTH_EX_PARTIAL"
+	local refreshed_any=false
 	while IFS='|' read -r _slug _path; do
 		[[ -z "$_slug" ]] && continue
 		repo_count=$((repo_count + 1))
@@ -894,7 +924,7 @@ _refresh_person_stats_cache() {
 	while IFS='|' read -r slug path; do
 		[[ -z "$slug" ]] && continue
 
-		search_remaining=$(gh api rate_limit --jq '.resources.search.remaining' 2>/dev/null) || search_remaining=0
+		search_remaining=$(_stats_health_person_stats_search_remaining)
 		if [[ "$search_remaining" -lt "$search_api_cost_per_contributor" ]]; then
 			echo "[stats] Person stats cache refresh stopped mid-run: Search API budget exhausted (${search_remaining} remaining)" >>"$LOGFILE"
 			break
@@ -902,15 +932,19 @@ _refresh_person_stats_cache() {
 
 		local slug_safe="${slug//\//-}"
 		local cache_file="${PERSON_STATS_CACHE_DIR}/person-stats-cache-${slug_safe}.md"
-		local md
-		md=$(bash "$activity_helper" person-stats "$path" --period month --format markdown 2>/dev/null) || md=""
-		if [[ -n "$md" ]]; then
+		local md md_rc
+		md_rc=0
+		md=$(timeout_sec "$STATS_HEALTH_PERSON_STATS_TIMEOUT" bash "$activity_helper" person-stats "$path" --period month --format markdown 2>/dev/null) || md_rc=$?
+		if [[ -n "$md" && ( "$md_rc" -eq 0 || "$md_rc" -eq "$partial_exit" ) ]]; then
 			echo "$md" >"$cache_file"
+			refreshed_any=true
+		elif [[ "$md_rc" -ne 0 ]]; then
+			echo "[stats] Person stats cache refresh failed for ${slug}: helper exited ${md_rc}" >>"$LOGFILE"
 		fi
 	done <<<"$repo_entries"
 
 	# Cross-repo person-stats
-	search_remaining=$(gh api rate_limit --jq '.resources.search.remaining' 2>/dev/null) || search_remaining=0
+	search_remaining=$(_stats_health_person_stats_search_remaining)
 	local all_repo_paths
 	all_repo_paths=$(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false) | .path' "$repos_json" 2>/dev/null || echo "")
 	if [[ -n "$all_repo_paths" && "$search_remaining" -ge "$search_api_cost_per_contributor" ]]; then
@@ -919,15 +953,23 @@ _refresh_person_stats_cache() {
 			[[ -n "$rp" ]] && cross_args+=("$rp")
 		done <<<"$all_repo_paths"
 		if [[ ${#cross_args[@]} -gt 1 ]]; then
-			local cross_md
-			cross_md=$(bash "$activity_helper" cross-repo-person-stats "${cross_args[@]}" --period month --format markdown 2>/dev/null) || cross_md=""
-			if [[ -n "$cross_md" ]]; then
+			local cross_md cross_rc
+			cross_rc=0
+			cross_md=$(timeout_sec "$STATS_HEALTH_PERSON_STATS_TIMEOUT" bash "$activity_helper" cross-repo-person-stats "${cross_args[@]}" --period month --format markdown 2>/dev/null) || cross_rc=$?
+			if [[ -n "$cross_md" && ( "$cross_rc" -eq 0 || "$cross_rc" -eq "$partial_exit" ) ]]; then
 				echo "$cross_md" >"${PERSON_STATS_CACHE_DIR}/person-stats-cache-cross-repo.md"
+				refreshed_any=true
+			elif [[ "$cross_rc" -ne 0 ]]; then
+				echo "[stats] Cross-repo person stats cache refresh failed: helper exited ${cross_rc}" >>"$LOGFILE"
 			fi
 		fi
 	fi
 
-	date +%s >"$PERSON_STATS_LAST_RUN"
-	echo "[stats] Person stats cache refreshed" >>"$LOGFILE"
+	if [[ "$refreshed_any" == "true" ]]; then
+		date +%s >"$PERSON_STATS_LAST_RUN"
+		echo "[stats] Person stats cache refreshed" >>"$LOGFILE"
+	else
+		echo "[stats] Person stats cache refresh produced no successful outputs; last-run marker not updated" >>"$LOGFILE"
+	fi
 	return 0
 }

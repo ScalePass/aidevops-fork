@@ -25,22 +25,26 @@ model: sonnet
 ## Quick Reference
 
 - **What**: Plain-text markdown capturing a complete visual design system for AI agents
-- **Normative spec**: [google-labs-code/design.md](https://github.com/google-labs-code/design.md) (Apache 2.0, format version `alpha`; aidevops tracks upstream changes beyond the original v0.1.0 adoption). Full spec: [`docs/spec.md`](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md)
+- **Normative spec**: [google-labs-code/design.md](https://github.com/google-labs-code/design.md) (Apache 2.0, format version `alpha`; aidevops tracks upstream through upstream commit `18508f2` after the v0.2.0 review). Full spec: [`docs/spec.md`](https://github.com/google-labs-code/design.md/blob/main/docs/spec.md)
 - **Format**: YAML front matter (machine-readable tokens) + Markdown body (human-readable rationale)
 - **Location**: `DESIGN.md` in project root (alongside `AGENTS.md`)
-- **Validator**: `npx @google/design.md lint DESIGN.md` (lint, diff, export to tailwind/dtcg, spec; use the `designmd` bin alias in Windows package scripts)
+- **Validator**: `npx @google/design.md lint DESIGN.md` (lint, diff, export to `json-tailwind`/`css-tailwind`/`dtcg`, spec; use the `designmd` bin alias in Windows package scripts)
 - **Template**: `templates/DESIGN.md.template`
-- **Library**: `tools/design/library/` (55 brand examples + 12 style templates)
+- **Library**: `tools/design/library/` (86 brand examples, style templates, and report presentation presets)
 - **Preview**: `tools/design/library/_template/preview.html.template`
 - **Palette tools**: `tools/design/colour-palette.md`, `scripts/colormind-helper.sh`
 - **Preview capture**: `scripts/design-preview-helper.sh`
 
 **Agent relationships:**
 
+Upstream `@google/design.md` v0.2.0 and follow-up commit `18508f2` were reviewed after the initial open-source release. The current aidevops schema guidance covers CSS color parsing, transparent hex support, Tailwind export format names, component-aware diff output, top-level typo warnings, boolean/numeric component scalar handling, Markdown lint reports, the `designmd` Windows alias, lint/diff/export/spec commands, and the alpha-format token model; continue watching for v1 or schema-breaking releases before changing templates.
+
 | Agent | Role | Relationship |
 |-------|------|--------------|
 | `tools/design/brand-identity.md` | Strategic brand profile (8 dimensions) | **Upstream** — feeds DESIGN.md generation |
-| `tools/design/ui-ux-inspiration.md` | URL study + interview workflow | **Producer** — extracts tokens |
+| `tools/design/ui-ux-inspiration.md` | URL study + interview workflow | **Discovery** — finds and studies references |
+| `tools/design/design-md-from-links.md` | Website/brand links to DESIGN.md | **Producer** — extracts, validates, previews, and hands off tokens |
+| `tools/design/report-presentation.md` | Report presentation tokens/components | **Specialisation** — Markdown, HTML, and PDF-ready reports |
 | `tools/design/design-inspiration.md` | 60+ curated gallery resources | **Discovery** |
 | `tools/design/colour-palette.md` | Palette generation and spinning | **Tool** |
 | `tools/design/library/` | Example DESIGN.md files | **Reference** |
@@ -52,11 +56,12 @@ model: sonnet
 **Workflow** (apply in order):
 
 1. **Check** — does `DESIGN.md` exist in project root? If yes, use it. If no, create one.
-2. **Create** — from scratch (interview), URL (extraction), or library example.
-3. **Validate** — run `npx @google/design.md lint DESIGN.md`. Zero errors, warnings reviewed.
-4. **Preview** — generate `preview.html` to visually verify the design system.
-5. **Iterate** — spin palettes, adjust tokens, regenerate preview until satisfied.
-6. **Build** — hand DESIGN.md to coding agents for consistent, on-brand UI output.
+2. **Load context** — for new brand/style guides, read the focused design references before drafting: `brand-identity.md`, `colour-palette.md`, `design-md-from-links.md`, `ui-ux-inspiration.md`, `ui-ux-catalogue.toon`, and `report-presentation.md` when HTML/PDF reports are in scope. Use `design-inspiration.md`, `open-design.md`, and `open-design-ingestion.md` for discovery/artifact workflows only when relevant.
+3. **Create** — from scratch (interview), links/local style guides (`tools/design/design-md-from-links.md`), report presentation (`tools/design/report-presentation.md`), or library example.
+4. **Validate** — run `npx @google/design.md lint DESIGN.md`. Zero errors, warnings reviewed.
+5. **Preview** — generate `preview.html` to visually verify the design system.
+6. **Iterate** — spin palettes, adjust tokens, regenerate preview until satisfied.
+7. **Build** — hand DESIGN.md to coding agents for consistent, on-brand UI output.
 
 <!-- AI-CONTEXT-END -->
 
@@ -86,7 +91,7 @@ spacing:
   <scale-level>: <Dimension | number>
 components:
   <component-name>:
-    <token-name>: <string | number | token reference>
+    <token-name>: <string | number | boolean | token reference>
 ---
 ```
 
@@ -94,16 +99,18 @@ components:
 
 | Type | Format | Example |
 |------|--------|---------|
-| Color | `#` + hex, sRGB | `"#1A1C1E"` |
-| Dimension | number + unit (`px`, `em`, `rem`) | `48px`, `-0.02em` |
+| Color | CSS color parsed to sRGB | `"#1A1C1E"`, `oklch(62% 0.18 24)` |
+| Dimension | number + CSS length unit (`px`, `em`, `rem`) | `48px`, `-0.02em` |
 | Token Reference | `{path.to.token}` | `{colors.primary}` |
 | Typography | object (see below) | *inline object* |
+
+**Colors:** v0.2.0 accepts short/long hex including alpha (`#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA`), CSS named colors including `transparent`, and standard/CSS Color Module functional forms such as `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`, and `oklch()`. The model resolves them to sRGB for luminance/contrast checks and export.
 
 **Typography object:** `fontFamily`, `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`, `fontFeature`, `fontVariation`. `lineHeight` accepts a Dimension or a unitless multiplier. `fontWeight` accepts a bare number or quoted string.
 
 **Token references** wrap a dotted path in curly braces: `{colors.primary-60}`, `{typography.body-md}`, `{rounded.sm}`. Components may reference composite tokens like `{typography.label-md}`; other groups must reference primitive values.
 
-Component properties may also use bare numeric values where CSS/design systems commonly expect numbers, such as `fontWeight: 600` or `borderWidth: 1`. The upstream model handler stores these numbers as-is.
+Component properties may also use bare numeric, boolean, or Dimension values where CSS/design systems commonly expect them, such as `height: 44px`, `size: 16px`, `padding: 12px`, `opacity: 0.9`, or `visible: true`. The upstream model handler stores numeric and boolean values as-is.
 
 ### Canonical Section Order
 
@@ -148,13 +155,14 @@ components:
     backgroundColor: "{colors.tertiary-container}"
 ```
 
-Valid component properties: `backgroundColor`, `textColor`, `typography`, `rounded`, `padding`, `size`, `height`, `width`, `fontWeight`, `borderWidth`. Variants (hover, active, pressed, disabled) are expressed as **separate component entries with a related key name** — NOT nested under the base component.
+Valid component properties in v0.2.0: `backgroundColor`, `textColor`, `typography`, `rounded`, `padding`, `size`, `height`, `width`. Unknown component properties are accepted with a warning, so keep template/library tokens on the known property set unless a project intentionally needs an extension. Variants (hover, active, pressed, disabled) are expressed as **separate component entries with a related key name** — NOT nested under the base component.
 
 ### Unknown Content Behaviour
 
 | Scenario | Spec behaviour |
 |----------|---------------|
 | Unknown section heading (e.g. our §9, §10) | Preserve; do not error |
+| Unknown top-level YAML key | Warn only when it looks like a typo of a known schema key, such as `colours:` → `colors:`; unrelated extension keys stay silent |
 | Unknown color/typography token name | Accept if value is valid |
 | Unknown component property | Accept with warning |
 | Duplicate section heading | **Error; reject the file** |
@@ -164,21 +172,24 @@ Valid component properties: `backgroundColor`, `textColor`, `typography`, `round
 The `@google/design.md` npm package ships four commands. Run the linter at least once before handing a DESIGN.md to a coding agent:
 
 ```bash
-# Lint: eight rules, JSON output, exit 1 on errors
+# Lint: nine rules, JSON output, exit 1 on errors
 npx @google/design.md lint DESIGN.md
 
 # Diff: detect token regressions between versions, including components
 npx @google/design.md diff DESIGN.md DESIGN-v2.md
 
-# Export: tokens to Tailwind theme config or DTCG tokens.json
-npx @google/design.md export --format tailwind DESIGN.md > tailwind.theme.json
+# Export: tokens to Tailwind theme config/CSS or DTCG tokens.json
+npx @google/design.md export --format json-tailwind DESIGN.md > tailwind.theme.json
+npx @google/design.md export --format css-tailwind DESIGN.md > theme.css
 npx @google/design.md export --format dtcg DESIGN.md > tokens.json
 
 # Spec: output the format spec (useful for injecting into agent prompts)
 npx @google/design.md spec --rules
 ```
 
-**Linter rules (eight, verified against `@google/design.md` v0.1.1):**
+`tailwind` remains a backwards-compatible alias for `json-tailwind`; prefer explicit `json-tailwind` or `css-tailwind` in new docs and scripts.
+
+**Linter rules (nine, verified against `@google/design.md` through upstream commit `18508f2`):**
 
 | Rule | Severity | What it checks |
 |------|----------|---------------|
@@ -188,6 +199,7 @@ npx @google/design.md spec --rules
 | `orphaned-tokens` | warning | Custom tokens defined but never referenced by any component; MD3 baseline families and siblings of referenced MD3 color tokens are exempt |
 | `missing-typography` | warning | Colors defined but no typography tokens exist |
 | `section-order` | warning | Sections out of canonical order |
+| `unknown-key` | warning | Top-level YAML keys that look like typos of known schema keys; unrelated extension keys stay silent |
 | `missing-sections` | info | Optional sections (spacing, rounded) absent when others exist |
 | `token-summary` | info | Count summary per token group |
 
@@ -200,13 +212,16 @@ Choose method based on what exists:
 | Situation | Method | Starting point |
 |-----------|--------|---------------|
 | New project, no design | Interview | Brand identity → palette → library match → template |
-| Match an existing site | URL extraction | `tools/design/ui-ux-inspiration.md` URL Study Workflow |
+| Match existing website, brand links, or local style guide specimen | Link/style-guide extraction | `tools/design/design-md-from-links.md` |
+| Styled report, HTML export, or PDF-ready output | Report presentation | `tools/design/report-presentation.md` |
 | Known brand/style | Library copy | `tools/design/library/brands/` or `library/styles/` |
 | `brand-identity.toon` exists | Brand identity | Map dimensions to sections (see below) |
 
 **Method 1 (Interview):** Brand identity interview (`tools/design/brand-identity.md`) → select UI style from `ui-ux-catalogue.toon` → generate palette (`colour-palette.md`) → copy closest library example → synthesise into template → lint + preview + iterate.
 
-**Method 2 (URL):** URL study workflow extracts computed styles (colours, typography, spacing, components, shadows, CSS custom properties from `:root`). Populate YAML token layer from extracted values, write prose rationale for each section, fill gaps (do's/don'ts, responsive rules) by inference. Validate with linter, generate preview, validate against source. Full browser automation process: `tools/design/ui-ux-inspiration.md`.
+**Method 2 (Links/style guides):** Dedicated source-to-DESIGN.md workflow extracts computed styles, CSS variables, component inventories, print/report rules, and brand patterns from user-provided website/branding links or local style-guide specimens while treating source content as untrusted. Populate YAML token layer from extracted values, write prose rationale, check WCAG contrast/body text/focus/table/print readability, run `npx @google/design.md lint DESIGN.md`, generate preview, then hand off to build agents. Full workflow: `tools/design/design-md-from-links.md`.
+
+**Method 2b (Reports):** For client reports, audits, dashboards, HTML exports, or PDF-ready output, map report components to DESIGN.md component tokens using `tools/design/report-presentation.md`. Cover/meta, TOC, chapter heroes, evidence badges, tactic cards, tables, source cards, callouts, checklists, and print CSS all need explicit token/component coverage.
 
 **Method 3 (Library):** Copy closest `library/brands/` or `library/styles/` DESIGN.md into project root. Swap token values in YAML front matter, rewrite prose to match, update do's/don'ts. Lint + preview + iterate.
 
@@ -223,7 +238,7 @@ Choose method based on what exists:
 
 **For coding agents:** Drop `DESIGN.md` in project root. Tell the agent: `"Build a landing page following DESIGN.md"`. The agent reads YAML tokens for exact values and prose for rationale — specific, reproducible output.
 
-**For Tailwind projects:** Export tokens with `npx @google/design.md export --format tailwind DESIGN.md > tailwind.theme.json` and import into `tailwind.config.js`. Design updates in DESIGN.md propagate automatically on next build.
+**For Tailwind projects:** Export tokens with `npx @google/design.md export --format json-tailwind DESIGN.md > tailwind.theme.json` for Tailwind v3 `theme.extend` JSON, or `npx @google/design.md export --format css-tailwind DESIGN.md > theme.css` for a Tailwind v4 `@theme { ... }` block. Design updates in DESIGN.md propagate automatically on next build.
 
 **For design review:** Generate `preview.html` from `tools/design/library/_template/preview.html.template`. Shows colour swatches, typography scale, button variants, card/input examples, spacing scale, light/dark modes.
 
@@ -237,7 +252,7 @@ tools/design/library/
 ├── _template/
 │   ├── DESIGN.md.template     -- Section skeleton with placeholders
 │   └── preview.html.template  -- Parameterised HTML/CSS for visual preview
-├── brands/                    -- 55 real brand examples (educational use)
+├── brands/                    -- 86 real brand examples (educational use)
 │   └── {brand}/DESIGN.md
 └── styles/                    -- 12 archetype style templates
     ├── corporate-traditional/DESIGN.md
@@ -271,7 +286,9 @@ The spec format is `alpha` — expect changes. aidevops mitigations:
 ## Related
 
 - `tools/design/brand-identity.md` -- Strategic brand profile (upstream input)
-- `tools/design/ui-ux-inspiration.md` -- URL study extraction workflow
+- `tools/design/ui-ux-inspiration.md` -- URL study discovery and inspiration workflow
+- `tools/design/design-md-from-links.md` -- Dedicated website/brand links to DESIGN.md workflow
+- `tools/design/report-presentation.md` -- Report components, HTML/PDF styling, and print-ready guidance
 - `tools/design/design-inspiration.md` -- 60+ curated gallery resources
 - `tools/design/colour-palette.md` -- Palette generation and spinning
 - `tools/design/library/README.md` -- Library index and usage

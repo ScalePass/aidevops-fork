@@ -31,14 +31,72 @@ GH_CALLS="${TMP}/gh-calls.log"
 gh() {
 	local call="$*"
 	printf '%s\n' "$call" >>"$GH_CALLS"
-	case "$call" in
-		*"issue list --repo owner/repo --label source:health-dashboard"*)
+	case "${HEALTH_FIXTURE:-}:$call" in
+		empty_login:*"api user --jq .login"*)
+			printf '%s' ''
+			return 0
+			;;
+		rate_limit_login:*"api user --jq .login"*)
+			printf '%s' '{"message":"API rate limit exceeded", "status":"403"}' >&2
+			return 1
+			;;
+		conflicting_operator:*"issue list --repo owner/repo --label source:health-dashboard"*)
+			printf '%s' '[{"number":4643,"title":"[Supervisor:marcusquinn] stale dashboard","labels":[{"name":"source:health-dashboard"},{"name":"operator:alex-solovyev"},{"name":"alex-solovyev"},{"name":"supervisor"}]}]'
+			return 0
+			;;
+		conflicting_operator:*"issue list --repo owner/repo --search in:title [Supervisor:marcusquinn]"*)
+			printf '%s' '[{"number":4643,"title":"[Supervisor:marcusquinn] stale dashboard","labels":[{"name":"source:health-dashboard"},{"name":"operator:alex-solovyev"},{"name":"alex-solovyev"},{"name":"supervisor"}]}]'
+			return 0
+			;;
+		legacy_title:*"issue list --repo owner/repo --label source:health-dashboard"*)
+			printf '%s' '[{"number":555,"title":"[Supervisor:github-user] legacy dashboard","labels":[{"name":"source:health-dashboard"},{"name":"supervisor"},{"name":"github-user"}]}]'
+			return 0
+			;;
+		cache_conflict:*"issue view 4643 --repo owner/repo --json state,labels"*)
+			printf '%s' '{"state":"OPEN","labels":[{"name":"source:health-dashboard"},{"name":"operator:alex-solovyev"}]}'
+			return 0
+			;;
+		cache_open_state:*"issue view 4644 --repo owner/repo --json state,labels"*)
+			printf '%s' 'OPEN'
+			return 0
+			;;
+		cache_closed_state:*"issue view 4645 --repo owner/repo --json state,labels"*)
+			printf '%s' 'CLOSED'
+			return 0
+			;;
+		activity_guard_autodispatch:*"issue list --repo owner/repo --assignee github-user"*)
+			printf '%s' '0'
+			return 0
+			;;
+		activity_guard_autodispatch:*"issue list --repo owner/repo --label auto-dispatch"*)
+			printf '%s' '1'
+			return 0
+			;;
+		activity_guard_idle:*"issue list --repo owner/repo --assignee github-user"*)
+			printf '%s' '0'
+			return 0
+			;;
+		activity_guard_idle:*"issue list --repo owner/repo --label auto-dispatch"*)
+			printf '%s' '0'
+			return 0
+			;;
+		:*"issue list --repo owner/repo --label source:health-dashboard"*)
 			printf '%s' '[{"number":20408,"title":"[Supervisor:github-user] 1 PR at 10:00 UTC","labels":[{"name":"source:health-dashboard"},{"name":"supervisor"},{"name":"github-user"}],"createdAt":"2026-05-01T10:00:00Z"},{"number":18669,"title":"[Contributor:local-user] 0 PRs at 09:00 UTC","labels":[{"name":"source:health-dashboard"},{"name":"contributor"},{"name":"local-user"}],"createdAt":"2026-04-01T09:00:00Z"}]'
 			return 0
 			;;
 		*) return 0 ;;
 	esac
 	return 0
+}
+
+# shellcheck disable=SC2317
+whoami() {
+	if [[ -n "${HEALTH_WHOAMI_FIXTURE:-}" ]]; then
+		printf '%s' "$HEALTH_WHOAMI_FIXTURE"
+		return 0
+	fi
+	command whoami "$@"
+	return $?
 }
 
 # shellcheck disable=SC2317
@@ -49,6 +107,12 @@ gh_issue_view() { gh issue view "$@" && return 0; return 1; }
 gh_create_issue() { gh issue create "$@" && return 0; return 1; }
 # shellcheck disable=SC2317
 gh_issue_edit_safe() { gh issue edit "$@" && return 0; return 1; }
+# shellcheck disable=SC2317
+gh_pr_list() {
+	printf 'pr list %s\n' "$*" >>"$GH_CALLS"
+	printf '%s' "${HEALTH_PR_COUNT:-0}"
+	return 0
+}
 
 # shellcheck source=../portable-stat.sh
 source "${SCRIPTS_DIR}/portable-stat.sh"
@@ -59,6 +123,16 @@ source "${SCRIPTS_DIR}/stats-health-dashboard.sh"
 
 # shellcheck disable=SC2317
 _unpin_health_issue() { printf 'unpin %s\n' "$*" >>"$GH_CALLS"; return 0; }
+
+# shellcheck disable=SC2317
+_scan_active_workers() {
+	if [[ "${HEALTH_ACTIVE_WORKERS:-0}" -gt 0 ]]; then
+		printf '%s\0%s\0%s\0' '_Active workers_' "$HEALTH_ACTIVE_WORKERS" ''
+		return 0
+	fi
+	printf '%s\0%s\0%s\0' '_No active workers_' '0' ''
+	return 0
+}
 
 identity_lines=$(_dashboard_identity_aliases "github-user")
 canonical=$(printf '%s\n' "$identity_lines" | sed -n '1p')
@@ -134,6 +208,94 @@ else
 	fail "extracts one issue number from noisy wrapper output" "extracted=${extracted}"
 fi
 
+: >"$GH_CALLS"
+export HEALTH_FIXTURE=conflicting_operator
+result=$(_find_health_issue \
+	"owner/repo" "marcusquinn" "supervisor" "[Supervisor:marcusquinn]" \
+	"supervisor" "Supervisor" "${HOME}/.aidevops/logs/health-issue-marcusquinn-owner-repo" \
+	"marcusquinn" "marcusquinn")
+unset HEALTH_FIXTURE
+
+if [[ -z "$result" ]]; then
+	pass "does not reuse dashboard with conflicting operator label despite matching title"
+else
+	fail "does not reuse dashboard with conflicting operator label despite matching title" "result=${result}; calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
+
+: >"$GH_CALLS"
+export HEALTH_FIXTURE=legacy_title
+result=$(_find_health_issue \
+	"owner/repo" "github-user" "supervisor" "[Supervisor:canonical-operator]" \
+	"supervisor" "Supervisor" "${HOME}/.aidevops/logs/health-issue-legacy-owner-repo" \
+	"canonical-operator" "$aliases")
+unset HEALTH_FIXTURE
+
+if [[ "$result" == "555" ]]; then
+	pass "keeps legacy title migration when no operator label exists"
+else
+	fail "keeps legacy title migration when no operator label exists" "result=${result}; calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
+
+cache_file="${HOME}/.aidevops/logs/health-issue-cache-conflict-owner-repo"
+printf '%s\n' '4643' >"$cache_file"
+: >"$GH_CALLS"
+export HEALTH_FIXTURE=cache_conflict
+result=$(_find_health_issue \
+	"owner/repo" "marcusquinn" "supervisor" "[Supervisor:marcusquinn]" \
+	"supervisor" "Supervisor" "$cache_file" \
+	"marcusquinn" "marcusquinn")
+unset HEALTH_FIXTURE
+
+if [[ -z "$result" && ! -f "$cache_file" ]]; then
+	pass "drops cached dashboard with conflicting operator label"
+else
+	fail "drops cached dashboard with conflicting operator label" "result=${result}; cache_exists=$([[ -f "$cache_file" ]] && printf yes || printf no); calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
+
+if _health_issue_operator_label_allows_identity "" "canonical-operator"; then
+	pass "allows empty cached issue metadata as unknown rather than jq parse failure"
+else
+	fail "allows empty cached issue metadata as unknown rather than jq parse failure" "empty input was rejected"
+fi
+
+if _health_issue_operator_label_allows_identity "OPEN" "canonical-operator"; then
+	pass "allows raw open state metadata as unknown rather than jq parse failure"
+else
+	fail "allows raw open state metadata as unknown rather than jq parse failure" "OPEN input was rejected"
+fi
+
+cache_file="${HOME}/.aidevops/logs/health-issue-cache-open-owner-repo"
+printf '%s\n' '4644' >"$cache_file"
+: >"$GH_CALLS"
+export HEALTH_FIXTURE=cache_open_state
+result=$(_find_health_issue \
+	"owner/repo" "marcusquinn" "supervisor" "[Supervisor:marcusquinn]" \
+	"supervisor" "Supervisor" "$cache_file" \
+	"marcusquinn" "marcusquinn")
+unset HEALTH_FIXTURE
+
+if [[ "$result" == "4644" && -f "$cache_file" ]]; then
+	pass "keeps raw OPEN cached dashboard state without jq parse noise"
+else
+	fail "keeps raw OPEN cached dashboard state without jq parse noise" "result=${result}; cache_exists=$([[ -f "$cache_file" ]] && printf yes || printf no); calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
+
+cache_file="${HOME}/.aidevops/logs/health-issue-cache-closed-owner-repo"
+printf '%s\n' '4645' >"$cache_file"
+: >"$GH_CALLS"
+export HEALTH_FIXTURE=cache_closed_state
+result=$(_find_health_issue \
+	"owner/repo" "marcusquinn" "supervisor" "[Supervisor:marcusquinn]" \
+	"supervisor" "Supervisor" "$cache_file" \
+	"marcusquinn" "marcusquinn")
+unset HEALTH_FIXTURE
+
+if [[ -z "$result" && ! -f "$cache_file" ]]; then
+	pass "drops raw CLOSED cached dashboard state without jq parse noise"
+else
+	fail "drops raw CLOSED cached dashboard state without jq parse noise" "result=${result}; cache_exists=$([[ -f "$cache_file" ]] && printf yes || printf no); calls=$(tr '\n' ';' <"$GH_CALLS")"
+fi
+
 body=$(_build_health_issue_body \
 	"2026-05-08T00:00:00Z" "Supervisor" "github-user" "owner/repo" \
 	"0" "0" "0" "0" "4" "1" "0" "" \
@@ -147,6 +309,95 @@ if [[ "$body" == *"canonical:"* && "$body" == *"canonical-operator"* && "$body" 
 else
 	fail "dashboard body exposes canonical identity context" "$body"
 fi
+
+: >"$LOGFILE"
+export HEALTH_FIXTURE=rate_limit_login
+resolved_login=$(_resolve_current_gh_login_or_fallback)
+unset HEALTH_FIXTURE
+
+if [[ "$resolved_login" != *"message"* && "$resolved_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+	pass "falls back to validated local identity when gh login is rate limited"
+else
+	fail "falls back to validated local identity when gh login is rate limited" "resolved=${resolved_login}"
+fi
+
+export HEALTH_FIXTURE=empty_login
+export HEALTH_WHOAMI_FIXTURE="local.user-name"
+resolved_login=$(_resolve_current_gh_login_or_fallback)
+unset HEALTH_FIXTURE HEALTH_WHOAMI_FIXTURE
+
+if [[ "$resolved_login" == "local.user-name" ]]; then
+	pass "allows dotted underscored and hyphenated local fallback identities"
+else
+	fail "allows dotted underscored and hyphenated local fallback identities" "resolved=${resolved_login}"
+fi
+
+export HEALTH_FIXTURE=empty_login
+export HEALTH_WHOAMI_FIXTURE="local/user"
+resolved_login=$(_resolve_current_gh_login_or_fallback)
+unset HEALTH_FIXTURE HEALTH_WHOAMI_FIXTURE
+
+if [[ "$resolved_login" == "unknown-runner" ]]; then
+	pass "rejects unsafe local fallback identities before label and cache use"
+else
+	fail "rejects unsafe local fallback identities before label and cache use" "resolved=${resolved_login}"
+fi
+
+unsafe_cache=$(_sanitize_runner_identity_for_cache '{"message":"API rate limit exceeded", "status":"403"}local-user')
+if [[ "$unsafe_cache" != *"{"* && "$unsafe_cache" != *"message\":"* && ${#unsafe_cache} -le 80 ]]; then
+	pass "sanitizes API error payloads before cache filename use"
+else
+	fail "sanitizes API error payloads before cache filename use" "safe=${unsafe_cache}"
+fi
+
+missing_cache_file="${HOME}/.aidevops/logs/health-issue-missing-owner-repo"
+rm -f "$missing_cache_file"
+: >"$GH_CALLS"
+: >"$LOGFILE"
+export HEALTH_ACTIVE_WORKERS=2
+if _check_health_issue_activity_guard "owner/repo" "$TMP" "github-user" "$missing_cache_file" && [[ ! -s "$GH_CALLS" ]]; then
+	pass "activity guard short-circuits on active workers before network calls"
+else
+	fail "activity guard short-circuits on active workers before network calls" "calls=$(tr '\n' ';' <"$GH_CALLS"); log=$(tr '\n' ';' <"$LOGFILE")"
+fi
+unset HEALTH_ACTIVE_WORKERS
+
+rm -f "$missing_cache_file"
+: >"$GH_CALLS"
+: >"$LOGFILE"
+export HEALTH_PR_COUNT=1
+if _check_health_issue_activity_guard "owner/repo" "$TMP" "github-user" "$missing_cache_file" && ! grep -q 'issue list' "$GH_CALLS"; then
+	pass "activity guard short-circuits on open PRs before issue lookups"
+else
+	fail "activity guard short-circuits on open PRs before issue lookups" "calls=$(tr '\n' ';' <"$GH_CALLS"); log=$(tr '\n' ';' <"$LOGFILE")"
+fi
+unset HEALTH_PR_COUNT
+
+rm -f "$missing_cache_file"
+: >"$GH_CALLS"
+: >"$LOGFILE"
+export HEALTH_FIXTURE=activity_guard_autodispatch
+if _check_health_issue_activity_guard "owner/repo" "$TMP" "github-user" "$missing_cache_file"; then
+	pass "activity guard proceeds when auto-dispatch work is queued"
+else
+	fail "activity guard proceeds when auto-dispatch work is queued" "calls=$(tr '\n' ';' <"$GH_CALLS"); log=$(tr '\n' ';' <"$LOGFILE")"
+fi
+unset HEALTH_FIXTURE
+
+rm -f "$missing_cache_file"
+: >"$GH_CALLS"
+: >"$LOGFILE"
+export HEALTH_FIXTURE=activity_guard_idle
+if _check_health_issue_activity_guard "owner/repo" "$TMP" "github-user" "$missing_cache_file"; then
+	fail "activity guard skips when PRs issues workers and auto-dispatch are absent" "calls=$(tr '\n' ';' <"$GH_CALLS"); log=$(tr '\n' ';' <"$LOGFILE")"
+else
+	if grep -q 'auto-dispatch work' "$LOGFILE"; then
+		pass "activity guard skips when PRs issues workers and auto-dispatch are absent"
+	else
+		fail "activity guard skip log names auto-dispatch work" "log=$(tr '\n' ';' <"$LOGFILE")"
+	fi
+fi
+unset HEALTH_FIXTURE
 
 printf '\n== Summary ==\n'
 if ((TESTS_FAILED > 0)); then

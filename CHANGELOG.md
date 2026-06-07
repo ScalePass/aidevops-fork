@@ -10,6 +10,1286 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.28] - 2026-06-07
+
+### Changed
+
+- route collaborator permission checks through app auth (#24511)
+
+## [3.20.27] - 2026-06-07
+
+### Changed
+
+- use gh auth fallback for repo-sync (#24510)
+
+## [3.20.26] - 2026-06-07
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- prewarm isolated opencode databases
+
+## [3.20.25] - 2026-06-07
+
+### Fixed
+
+- reuse project opencode shards
+- reuse project opencode shards
+
+## [3.20.24] - 2026-06-07
+
+### Fixed
+
+- mention review thread authors in replies (#24508)
+
+## [3.20.23] - 2026-06-07
+
+### Fixed
+
+- restrict stats routines to maintainers (#24507)
+
+## [3.20.22] - 2026-06-07
+
+### Fixed
+
+- preserve PR review scanner repo slug fields (#24505)
+
+## [3.20.21] - 2026-06-06
+
+### Changed
+
+- Documentation: add t3593 collaborator permission auth brief (#24499)
+
+### Fixed
+
+- prewarm isolated opencode databases
+
+## [3.20.20] - 2026-06-06
+
+### Changed
+
+- Version bump and maintenance updates
+
+
+## [3.20.19] - 2026-06-06
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- keep opencode launcher TUI clean
+- keep opencode launcher TUI clean
+
+## [3.20.18] - 2026-06-06
+
+### Changed
+
+- enforce role-aware review-thread automation (#24493)
+- fix: sanitize zero-progress threshold (#24491)
+- Maintenance: update simplification state registry
+- Maintenance: bump pyarrow in the pip group across 1 directory (#24473)
+
+### Fixed
+
+- ignore review gate for trusted dependabot CI (#24478)
+
+## [3.20.17] - 2026-06-06
+
+### Added
+
+- isolate opencode launch databases
+
+## [3.20.16] - 2026-06-06
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- trust safe dependabot updates (#24476)
+
+## [3.20.15] - 2026-06-06
+
+### Fixed
+
+- edge-trigger zero-progress meta issue filing (#24475)
+
+## [3.20.14] - 2026-06-06
+
+### Changed
+
+- fix: skip closed issue dispatch before claim (#24440)
+- fix: queue ruleset-blocked pulse merges (#24439)
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Maintenance: bump aiohttp from 3.13.4 to 3.14.0 in the pip group across 1 directory (#24427)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- sync opencode migration ledger tables (#24474)
+- simplify native auto merge defer handling (#24446)
+- close stale zero-progress meta issues (#24443)
+- repair opencode worker db migration seeding (#24433)
+
+## [3.20.13] - 2026-06-05
+
+### Changed
+
+- Maintenance: bump aiohttp from 3.13.4 to 3.14.0 in the pip group across 1 directory (#24427)
+- Maintenance: update simplification state registry
+
+## [3.20.12] - 2026-06-04
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- add pulse PR review-thread response stage (#24426)
+
+## [3.20.11] - 2026-06-03
+
+### Added
+
+- OpenCode hidden session lookup for active child sessions, archived sessions, and project-id drift diagnostics (#24412)
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- close superseded duplicate PRs after issue solved (#24403)
+
+## [3.20.10] - 2026-06-02
+
+### Changed
+
+- Version bump and maintenance updates
+
+
+## [3.20.9] - 2026-06-02
+
+### Changed
+
+- fix: harden dispatch claim assignment guard (#24400)
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- fix: count merge-in-progress as pulse progress (#24384)
+- Maintenance: update simplification state registry
+- fix: avoid cleanup reversal broken pipes (#24379)
+
+### Fixed
+
+- preserve recently updated OpenCode sessions during archive (#24404)
+- classify benign release unlock failures (#24380)
+- stop stale headless model pulse warning (#24378)
+
+## [3.20.8] - 2026-06-01
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- defer OpenAI model limits to OpenCode (#24371)
+- clarify headless source repo paths (#24367)
+- reuse merge PR metadata (#24366)
+
+## [3.20.7] - 2026-06-01
+
+### Changed
+
+- fix: block maintainer gate bypasses (#24357)
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+
+## [3.20.6] - 2026-05-31
+
+### Changed
+
+- Maintenance: update simplification state registry
+- exclude pending required checks from zero-progress (#24312)
+- detect legacy status error states (#24316)
+- fix merge-stuck legacy status detection (#24314)
+- scan orphaned health dashboards (#24307)
+- Tests: guard opencode continuation seeding (#24304)
+- surface stale dashboard refresh failures (#24265)
+- fix: quote runner health jq filters (#24297)
+- fix: normalize token worker path detection (#24280)
+
+### Fixed
+
+- harden PR required checks fallback (#24346)
+- handle pending PR required checks fallback (#24329)
+- ignore stale contributor dashboards (#24310)
+- exclude manual interactive PRs from zero-progress signal (#24177)
+
+## [3.20.5] - 2026-05-29
+
+### Changed
+
+- fix: preserve report heading anchor state (#24270)
+- fix: add infrastructure dispatch blocker (#24269)
+- avoid generated anchor suffix collisions
+- Documentation: adopt ClaudeBar Antigravity support (#24262)
+- Maintenance: update simplification state registry
+- normalize token worker path detection (#24257)
+- fix: map merged PR fields in REST projection (#24245)
+
+### Fixed
+
+- block infrastructure advisory dispatch (#24263)
+- harden playwright grep matching (#24258)
+
+## [3.20.4] - 2026-05-28
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- align token use report tables (#24243)
+
+## [3.20.3] - 2026-05-28
+
+### Changed
+
+- fix: auto-resume runner health breaker (#24228)
+
+### Fixed
+
+- clarify token use report totals (#24230)
+
+## [3.20.2] - 2026-05-28
+
+### Fixed
+
+- reduce report token use helper complexity (#24223)
+
+## [3.20.1] - 2026-05-28
+
+### Changed
+
+- Maintenance: prepare 3.20.1 changelog
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- lock approval conversations via REST fallback (#24222)
+
+## [3.20.1] - 2026-05-28
+
+### Fixed
+
+- lock approval conversations via REST fallback (#24222)
+
+## [3.20.0] - 2026-05-28
+
+### Added
+
+- add token use session report (#24220)
+
+### Changed
+
+- Maintenance: sync ref:GH#24221 to TODO.md [skip ci]
+- Refactor: iterate mermaid adjacent pairs with zip (#24219)
+- Maintenance: update simplification state registry
+- fix: preserve table separator data rows (#24200)
+- fix: validate report style slugs (#24192)
+- Maintenance: update simplification state registry
+- Refactor: clarify report css template flow (#24166)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- gate opencode brew prefix lookup (#24214)
+- keep optional label lookup non-fatal (#24196)
+- keep branch fallback non-fatal (#24167)
+- align report component followups (#24170)
+- defer version-manager branch lookup (#24163)
+- fall back for empty raised paper token (#24165)
+- optimize worker terminal completion checks (#24164)
+
+## [3.19.5] - 2026-05-26
+
+### Fixed
+
+- confirm terminal worker completion state (#24151)
+
+## [3.19.4] - 2026-05-26
+
+### Fixed
+
+- seed isolated opencode continuation sessions (#24150)
+
+## [3.19.2] - 2026-05-26
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+## [3.19.1] - 2026-05-26
+
+### Changed
+
+- Add augmentcode bot skip rules (#24112)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- honor report raised paper token (#24137)
+- repair lottiefiles report HTML nesting (#24134)
+- keep report action prompts inside sections (#24131)
+- include dispatch cleanup exit code (#24113)
+
+## [3.19.0] - 2026-05-25
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+## [3.18.1] - 2026-05-25
+
+### Fixed
+
+- deduplicate 3.18.0 changelog
+
+## [3.18.0] - 2026-05-25
+
+### Added
+
+- Add modular report markdown renderer and report example outputs (#24060)
+
+### Changed
+
+- Maintenance: prepare 3.18.0 changelog
+- Restore bulk dispatch label sweep (#24104)
+- Harden Nostr VPN package expansion (#24103)
+- Address report style review follow-up (#24102)
+- Update simplification state registry
+
+### Fixed
+
+- Handle escaped backslashes in Markdown tables (#24105)
+- Harden version-manager headless worker guard (#24101)
+
+## [3.17.32] - 2026-05-25
+
+### Changed
+
+- version report PDF exports (#24088)
+- Maintenance: ratchet QLTY_SMELL_THRESHOLD 53→52 (-1) [skip ci]
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- tighten health sentinel abstain assertion (#24099)
+- guard issue-worker release operations (#24086)
+- simplify dispatch cleanup label matching (#24081)
+
+## [3.17.31] - 2026-05-25
+
+### Changed
+
+- fix: harden report markdown rendering (#24074)
+- fix: preserve service interruption kill reason (#24078)
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- preserve service interruption kill reason (#24079)
+- preserve dispatch label cleanup exit codes (#24073)
+- exclude manual interactive PRs from zero-progress signal (#23940)
+
+## [3.17.30] - 2026-05-24
+
+### Changed
+
+- fix: improve rtk manual install hints (#24055)
+- fix: harden dispatch label cleanup (#24051)
+- Maintenance: update simplification state registry
+- Documentation: clarify RTK status fallback guidance (#24036)
+
+### Fixed
+
+- preserve service interruption exhaustion metrics (#24059)
+- address LLM visibility report CSS review followup (#24058)
+- clear stale auto-dispatch labels on close
+- align LLM visibility report CSS tokens (#24035)
+- harden report renderer parsing (#24034)
+
+## [3.17.29] - 2026-05-23
+
+### Added
+
+- register reports output plane (#24005)
+
+### Changed
+
+- Documentation: add design report guidance (#24006)
+- Documentation: add AI search reporting guidance (#24007)
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- consolidate partial closeout issue parsing (#24002)
+- tighten worker terminal completion checks (#23994)
+- narrow RTK git status regression guidance (#23993)
+- cache pulse PR list provider reads (#23714)
+- treat terminal worker state as complete
+
+## [3.17.28] - 2026-05-22
+
+### Changed
+
+- clarify headless canary expectation (#23972)
+- harden review source PR extraction (#23973)
+- reuse ruleset data in posture checks (#23974)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- streamline AI research auto fallback by resolving Anthropic credentials once (#23969)
+
+## [3.17.27] - 2026-05-22
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- pin canary to vanilla opencode agent (#23953)
+- prefer opencode for AI research auto (#23956)
+
+## [3.17.26] - 2026-05-22
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- respect closed native blockedBy relationships
+- add opencode AI research fallback (#23955)
+- require linked issue PR guidance (#23951)
+
+## [3.17.25] - 2026-05-21
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.17.24] - 2026-05-21
+
+### Changed
+
+- Tests: support deployed orphan cleanup layout
+
+## [3.17.23] - 2026-05-21
+
+### Changed
+
+- docs: adopt upstream watch updates (#23946)
+- Maintenance: update simplification state registry
+- require partial parent closeout (#23942)
+
+### Fixed
+
+- fail closed on dispatch claim errors (#23943)
+- expand orphan worktree directory patterns
+- trash orphaned worktree directories
+
+## [3.17.22] - 2026-05-21
+
+### Fixed
+
+- cover review scanner supersession (#23933)
+
+## [3.17.21] - 2026-05-21
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- pass repo slug to fallback worker launch (#23935)
+
+## [3.17.20] - 2026-05-21
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- parse numeric issue cleanup branches
+- bound dashboard person-stats rate probes (#23799)
+
+## [3.17.19] - 2026-05-21
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.17.18] - 2026-05-21
+
+### Fixed
+
+- archive terminal cleanup worktrees
+
+## [3.17.17] - 2026-05-21
+
+### Fixed
+
+- audit local-only worktree skips
+
+## [3.17.16] - 2026-05-21
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- log age-ineligible worktree skips
+
+## [3.17.15] - 2026-05-21
+
+### Fixed
+
+- strip HTML comments before parsing TODO.md tasks (GH#17804) (#23904)
+
+## [3.17.14] - 2026-05-21
+
+### Fixed
+
+- archive stale local PR worktrees
+
+## [3.17.13] - 2026-05-21
+
+### Fixed
+
+- migrate worktree owner registry on reads
+
+## [3.17.12] - 2026-05-20
+
+### Fixed
+
+- expire stale reused worktree owners
+
+## [3.17.11] - 2026-05-20
+
+### Changed
+
+- Documentation: clean up changelog duplicates (#23900)
+
+### Fixed
+
+- preserve closed issue unproven cleanup branches
+- reduce triage dispatch complexity (#23899)
+
+## [3.17.10] - 2026-05-20
+
+### Fixed
+
+- archive closed issue worktrees early
+
+## [3.17.9] - 2026-05-20
+
+### Fixed
+
+- fail closed on unknown worktree cleanup PR proof
+
+## [3.17.8] - 2026-05-20
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- pass repo to worktree cleanup PR lookups
+
+## [3.17.7] - 2026-05-20
+
+### Fixed
+
+- classify merged PR worktrees after ancestry mismatch
+
+## [3.17.6] - 2026-05-20
+
+### Fixed
+
+- preserve stale local worktree branches
+
+## [3.17.5] - 2026-05-20
+
+### Fixed
+
+- keep triage prelaunch failures retryable (#23882)
+
+## [3.17.4] - 2026-05-20
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.17.3] - 2026-05-20
+
+### Fixed
+
+- fix: PR salvage test temp cleanup (#23877)
+- fix: preserve PR salvage test temp cleanup (#23873)
+
+## [3.17.2] - 2026-05-20
+
+### Changed
+
+- Maintenance: update simplification state registry
+- fix: simplify framework routing dedup check (#23866)
+
+### Fixed
+
+- address xurl review followup (#23869)
+- simplify pulse multiplier fallback (#23867)
+- handle empty issue search dedup (#23853)
+
+## [3.17.1] - 2026-05-20
+
+### Fixed
+
+- add pulse account multiplier config fallback (#23852)
+
+## [3.17.0] - 2026-05-20
+
+### Added
+
+- add ObscuraVPN agent (#23849)
+
+## [3.16.0] - 2026-05-20
+
+### Added
+
+- add xurl X API capability (#23844)
+
+## [3.15.69] - 2026-05-20
+
+### Changed
+
+- Maintenance: bump idna in the pip group across 1 directory (#23842)
+
+### Fixed
+
+- preserve merged PR state in REST fallback (#23843)
+
+## [3.15.68] - 2026-05-19
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Documentation: clarify timeout fallback marker guidance (#23839)
+- fix secure PR salvage test temp file (#23835)
+- fix: harden body-file signature repair (#23834)
+
+### Fixed
+
+- harden worktree cleanup PR branch matching (#23838)
+- harden body-file signature repair (#23836)
+
+## [3.15.67] - 2026-05-19
+
+### Fixed
+
+- handle no-newline PR list output (#23823)
+
+## [3.15.66] - 2026-05-19
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Documentation: clarify person-stats timeout brief (#23815)
+- Exempt machine protocols from signature repair (#23811)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- prioritize PR state in cleanup classifier (#23822)
+- simplify blocked-by parser regex (#23819)
+- support exact PR salvage scans (#23797)
+- no-op repair for signed dynamic gh bodies (#23796)
+
+## [3.15.65] - 2026-05-19
+
+### Changed
+
+- Exempt machine protocols from signature repair (#23811)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- support exact PR salvage scans (#23797)
+- no-op repair for signed dynamic gh bodies (#23796)
+
+## [3.15.64] - 2026-05-19
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- allow squash-merged worktree cleanup (#23795)
+
+## [3.15.63] - 2026-05-18
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- extract timeout mock helper (#23792)
+- harden supply-chain test cleanup guard (#23790)
+
+## [3.15.62] - 2026-05-18
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Tests: isolate complexity gate test outputs (#23596)
+- Maintenance: update simplification state registry
+- Documentation: categorize changelog fix entry (#23781)
+- Tests: include cp and jq in no-node path (#23777)
+- Maintenance: update simplification state registry
+- Maintenance: mark t3591 complete (pr:#23764 completed:2026-05-18) [skip ci]
+
+### Fixed
+
+- parse compact blocked-by dispatch refs (#23786)
+- salvage labelless PR fixture cleanup (#23538)
+- name person stats partial exit (#23783)
+- bound person stats GitHub calls (#23764)
+
+## [3.15.61] - 2026-05-18
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Maintenance: mark t3591 complete (pr:#23764 completed:2026-05-18) [skip ci]
+
+### Fixed
+
+- bound person stats GitHub calls (#23764)
+
+## [3.15.60] - 2026-05-18
+
+### Changed
+
+- Maintenance: sync ref:GH#23761 to TODO.md [skip ci]
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- quote planning next-id assignments (#23762)
+
+## [3.15.59] - 2026-05-17
+
+### Changed
+
+- Tests: isolate dispatch tests from gh REST fallback env (#23741)
+- Maintenance: update simplification state registry
+- fix: harden profile AI stats source selection (#23740)
+
+### Fixed
+
+- consolidate dispatch hold label semantics
+- guard supply-chain test cleanup helper (#23754)
+- simplify pulse lifecycle pipe handling (#23753)
+- deduplicate supply-chain test cleanup (#23752)
+- guard issue create status label args (#23742)
+
+## [3.15.58] - 2026-05-17
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- suppress pulse PID broken pipe noise (#23719)
+- reuse resolved claim runner in repo state guard (#23735)
+- harden pulse PR cache cleanup (#23733)
+- document FOSS label parsing behavior (#23731)
+
+## [3.15.57] - 2026-05-17
+
+### Fixed
+
+- keep profile AI stats source-consistent
+- block external repo claim spam (#23710)
+
+## [3.15.56] - 2026-05-16
+
+### Fixed
+
+- reduce full-loop gate complexity
+- split maintainer hold and review gates
+
+## [3.15.55] - 2026-05-16
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Documentation: normalize changelog spelling (#23703)
+- tighten supply-chain self-reference path matching (#23702)
+- Maintenance: update simplification state registry
+- Refactor: centralize framework issue flag parsing (#23674)
+- Tests: exercise worktree owner registration (#23667)
+- Documentation: normalize changelog spelling (#23668)
+
+### Fixed
+
+- preserve dirty worktrees and reflog-only WIP (#23677) (#23678)
+- report supply-chain test setup failures (#23707)
+- harden label invariant jq labels handling (#23708)
+- harden dispatch test mocks (#23701)
+- harden pulse PR cache cleanup (#23699)
+- simplify non-task label jq detection (#23698)
+- respect FOSS disclosure opt-out (#23700)
+- preserve model selection failure status (#23696)
+- use pathlib as_uri in headless canary test (#23697)
+- harden blocker candidate handling (#23694)
+- harden benign ledger parent creation (#23693)
+- pass FOSS worker issue context (#23680)
+- use portable grep alternation in pulse test (#23676)
+- use portable canary grep (#23675)
+- export benign ledger in dispatch max (#23673)
+- simplify benign ledger parent handling (#23672)
+- reuse extracted task line for blocker checks (#23671)
+- use python URL quoting in headless canary test (#23670)
+- align headless runtime local declarations (#23669)
+- expose dispatch worktree registration failures (#23666)
+- harden GitHub cooldown state writes (#23665)
+- extend pulse PR metadata cache (#23663)
+- correct non-task label detection (#23664)
+- harden supply-chain advisory scan filtering (#23662)
+- preserve FOSS label arrays during dispatch (#23659)
+- make FOSS dispatch try all configured labels and expand repo paths (#23644)
+
+## [3.15.54] - 2026-05-15
+
+### Fixed
+
+- skip orphan recovery comments on closed issues (#23642)
+
+## [3.15.53] - 2026-05-15
+
+### Fixed
+
+- ignore scanner self-reference IOCs (#23641)
+
+## [3.15.52] - 2026-05-15
+
+### Added
+
+- prioritize low-complexity pulse dispatch (#23612)
+- prioritize solvable pulse dispatch candidates (#23610)
+
+### Changed
+
+- harden headless canary review follow-up (#23632)
+- Tests: isolate USERPROFILE in pool auth startup test (#23631)
+- fix: export dispatch benign block ledger (#23628)
+- Maintenance: bump the pip group across 1 directory with 7 updates
+- support auto-dispatch framework issue labels (#23607)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- register manual dispatch worktrees (#23639)
+- add shared GitHub secondary-rate-limit cooldown (#23638)
+- dedupe pulse PR view cache reads (#23637)
+- harden tier metadata refresh checks (#23633)
+- simplify OAuth pool token empty check (#23630)
+- robustly extract task lines for evidence (#23634)
+- ignore routine telemetry in label invariant triage (#23623)
+- refresh external pulse benign ledgers (#23627)
+- preserve worker headless export overrides (#23624)
+- make framework auto-dispatch issues dispatchable (#23629)
+- normalize pulse dispatch labels (#23626)
+- tolerate review gate status permission errors (#23608)
+
+## [3.15.51] - 2026-05-15
+
+### Added
+
+- prioritize low-complexity pulse dispatch (#23612)
+- prioritize solvable pulse dispatch candidates (#23610)
+
+### Changed
+
+- Tests: isolate USERPROFILE in pool auth startup test (#23631)
+- fix: export dispatch benign block ledger (#23628)
+- Maintenance: bump the pip group across 1 directory with 7 updates
+- support auto-dispatch framework issue labels (#23607)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- harden tier metadata refresh checks (#23633)
+- simplify OAuth pool token empty check (#23630)
+- robustly extract task lines for evidence (#23634)
+- ignore routine telemetry in label invariant triage (#23623)
+- refresh external pulse benign ledgers (#23627)
+- preserve worker headless export overrides (#23624)
+- make framework auto-dispatch issues dispatchable (#23629)
+- normalize pulse dispatch labels (#23626)
+- tolerate review gate status permission errors (#23608)
+
+## [3.15.50] - 2026-05-14
+
+### Fixed
+
+- refresh tier metadata after validator (#23603)
+
+## [3.15.49] - 2026-05-14
+
+### Fixed
+
+- canary works on OAuth-only hosts (drop --pure, load plugin, headless flag, benign probe) (#23599)
+
+## [3.15.48] - 2026-05-14
+
+### Fixed
+
+- stop seeding pending pool auth (#23600)
+
+## [3.15.47] - 2026-05-14
+
+### Changed
+
+- Tests: guard phase parent mock JSON (#23585)
+- Tests: cover missing pulse upstream refs (#23583)
+- fix phase parent jq assignment quoting (#23569)
+- Documentation: replace Python body-file examples with heredocs (#23565)
+- parse systemd worker properties once (#23563)
+- Tests: cover Homebrew OpenCode early return (#23539)
+
+### Fixed
+
+- use OAuth pool as 4th Anthropic credential source in ai-research-helper.sh + key auth-error off rc=2 (#23595)
+- align oauth pool fallback schema (#23593)
+- scope close state checks to task line (#23592)
+- preserve dispatch benign block ledger across refills (#23591)
+- preserve external pulse benign ledger (#23590)
+- handle unterminated systemd PID properties (#23589)
+- respect TODO-derived issue status labels (#23586)
+- centralize pulse merge PR fields (#23587)
+- localize worker headless exports (#23588)
+- validate contribution watch prerequisites before scan jq (#23584)
+- harden phase parent metadata parsing (#23582)
+- respect no-auto-dispatch in phase sequencing (#23568)
+- align worker origin detection (#23567)
+- preserve diagnostics in optional helpers (#23566)
+- consolidate phase parent metadata parsing (#23564)
+- optimize systemd pid property parsing (#23562)
+- scope benign dispatch block ledger to cycle (#23561)
+- clarify pulse upstream verification failures (#23560)
+- harden canonical sweep cwd change (#23559)
+- skip unsafe pulse repo refreshes (#23546)
+- run canonical worktree sweeps from repo cwd (#23545)
+- treat active claim dispatch blocks as benign (#23547)
+- skip unconfigured optional pulse routines (#23544)
+
+## [3.15.46] - 2026-05-14
+
+### Changed
+
+- Tests: cover Homebrew OpenCode early return (#23539)
+
+### Fixed
+
+- skip unsafe pulse repo refreshes (#23546)
+- run canonical worktree sweeps from repo cwd (#23545)
+- treat active claim dispatch blocks as benign (#23547)
+- skip unconfigured optional pulse routines (#23544)
+
+## [3.15.45] - 2026-05-14
+
+### Changed
+
+- Maintenance: mark t3590 complete (pr:#23537 completed:2026-05-14) [skip ci]
+
+### Fixed
+
+- skip closed parent phase auto-filing
+
+## [3.15.44] - 2026-05-14
+
+### Changed
+
+- Maintenance: mark t17994 complete (pr:#23536 completed:2026-05-14) [skip ci]
+
+### Fixed
+
+- resolve systemd worker pid handoff (#23535)
+- skip closed parent phase auto-filing (#23534)
+
+## [3.15.43] - 2026-05-14
+
+### Changed
+
+- Documentation: align gh body examples with signature gate (#23533)
+- Maintenance: mark t3589 complete (pr:#23532 completed:2026-05-14) [skip ci]
+
+### Fixed
+
+- propagate worker origin through sandbox (#23532)
+
+## [3.15.42] - 2026-05-14
+
+### Fixed
+
+- skip draft PRs before pulse merge writes (#23531)
+
+## [3.15.41] - 2026-05-14
+
+### Fixed
+
+- avoid issue body blocker false positives (#23530)
+
+## [3.15.40] - 2026-05-14
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.15.39] - 2026-05-14
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Performance: consolidate dispatch readiness grep (#23502)
+- Documentation: clarify React Doctor read-only scope (#23514)
+- Documentation: clarify hotfix commit staging (#23503)
+- Performance: reuse pulse PR labels during routing (#23498)
+- Documentation: clarify React Doctor workflow (#23494)
+- Maintenance: update simplification state registry
+- Documentation: add React Doctor guidance (#23483)
+
+### Fixed
+
+- add OpenCode plugin tool args schemas (#23527)
+- default issue create status labels (#23523)
+- normalize backfill status issue counts (#23518)
+- reject hyphen-leading stats fallback identity
+- normalize CLI help alias formatting (#23515)
+- count supply-chain scan findings consistently (#23513)
+- simplify OpenCode memory limit fallback (#23504)
+- initialize pulse PR metadata locals (#23501)
+- isolate handover log tests (#23499)
+- address worktree CLI review followup (#23497)
+- harden supply-chain advisory scanner (#23496)
+- address routine systemd review followups (#23495)
+
+## [3.15.38] - 2026-05-12
+
+### Added
+
+- add npm supply-chain advisory scanner (#23480)
+
+## [3.15.37] - 2026-05-12
+
+### Fixed
+
+- avoid misleading OpenCode npm install hint (#23479)
+
+## [3.15.36] - 2026-05-12
+
+### Changed
+
+- Version bump and maintenance updates
+
+## [3.15.35] - 2026-05-12
+
+### Changed
+
+- Maintenance: update simplification state registry
+- Performance: reduce stale interactive PR lookup overhead (#23473)
+- Tests: update handover staleness seconds labels (#23471)
+
+### Fixed
+
+- correct routine systemd daily timers (#23476)
+- bound Tabby profile repair blocks (#23474)
+- propagate fix-the-fixer mtime failures (#23461)
+- optimize stale handover activity checks (#23472)
+- document stats fallback identity validation (#23470)
+- address gh setup review followups (#23458)
+- harden pulse PR view cache lifecycle (#23463)
+- propagate gh slurp upgrade status (#23462)
+- reuse linked issue during conflict routing (#23460)
+- harden stats runner identity fallback (#23459)
+- deduplicate gh slurp prerequisite guidance (#23457)
+- preserve empty FOSS issue selections (#23456)
+- filter pulse dispatch candidates to issues (#23443)
+
+## [3.15.34] - 2026-05-12
+
+### Fixed
+
+- complete gh slurp prerequisite guidance
+
+## [3.15.33] - 2026-05-12
+
+### Changed
+
+- Maintenance: mark t3588 complete (pr:#23440 completed:2026-05-12) [skip ci]
+- surface gh upgrade remediation (#23440)
+- Maintenance: sync ref:GH#23435 to TODO.md [skip ci]
+- Maintenance: sync ref:GH#23428 to TODO.md [skip ci]
+
+### Fixed
+
+- reduce duplicate pulse PR metadata polling (#23438)
+- back off fix-the-fixer auth failures (#23434)
+- validate stats runner identity (#23436)
+- detect unsupported gh slurp prerequisite (#23429)
+
+## [3.15.32] - 2026-05-12
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- allow stale interactive merge handover
+
+## [3.15.31] - 2026-05-11
+
+### Fixed
+
+- preserve custom Tabby profiles (#23424)
+
+## [3.15.30] - 2026-05-11
+
+### Added
+
+- expose worktree helper in CLI (#23417)
+- correlate issue retry attempts (#23369)
+
+### Changed
+
+- Documentation: clarify hotfix worktree safety (#23418)
+- Tests: cover pulse dispatch rc adapter (#23415)
+- Documentation: refine Swift workflow discovery patterns (#23413)
+- Documentation: refine Swift Xcode workflow discovery (#23411)
+- address worker sampling review feedback (#23410)
+- Maintenance: update simplification state registry
+- Documentation: clarify hotfix rollback worktree base (#23407)
+- Maintenance: update simplification state registry
+- Maintenance: update simplification state registry
+- Documentation: clarify task worktree helper path (#23389)
+- Refactor: keep dispatch candidate under complexity gate (#23378)
+- Maintenance: update simplification state registry
+- Validate OpenCode memory tool payloads (#23367)
+- Documentation: sample mission worker failures (#23368)
+
+### Fixed
+
+- unblock stale interactive PR takeover
+- classify PR dispatch targets as benign (#23420)
+- normalize OpenCode memory recall limit (#23416)
+- address pulse diagnose review followup (#23414)
+- isolate function spacing test output (#23412)
+- preserve pulse dispatch block exit codes (#23408)
+- harden skills helper count cleanup (#23405)
+- isolate pulse dashboards by operator label (#23403)
+- skip protected conflicting PR close metadata fetch (#23402)
+- clarify generated worktree helper path (#23388)
+- classify interactive review holds as benign (#23377)
+- prevent non-git worktree cleanup noise (#23376)
+- suppress empty claim release warnings (#23375)
+
+## [3.15.29] - 2026-05-10
+
+### Changed
+
+- prescribe linked worktree guidance (#23365)
+
+## [3.15.28] - 2026-05-10
+
+### Changed
+
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- pin postflight secretlint to repo version
+
+## [3.15.27] - 2026-05-10
+
+### Changed
+
+- Documentation: address Swift workflow review refinements (#23361)
+
+## [3.15.26] - 2026-05-10
+
+### Changed
+
+- Tests: cover function complexity name normalization (#23362)
+- Documentation: refine Swift Xcode workflow examples (#23360)
+- Documentation: address self-improvement review feedback (#23355)
+- validate screenshot output paths (#23354)
+- Tests: cover Tabby OpenCode repair edge cases (#23353)
+- Tests: cover terminal title control range (#23350)
+- Performance: cache dashboard slug candidates (#23351)
+- cover sanitized Tabby title sequences (#23349)
+- collapse terminal title control runs (#23347)
+- Refactor: simplify terminal title sanitization (#23346)
+- Documentation: harden onboarding video asset path guidance (#23345)
+- Documentation: align QuickFile MCP placeholder paths (#23342)
+- Maintenance: update simplification state registry
+
+### Fixed
+
+- tighten skills helper temp cleanup (#23359)
+- clarify gh body-file cleanup ownership (#23358)
+- harden video-use skill guidance (#23357)
+- harden body-file signature test assertion (#23356)
+- satisfy biome for terminal title sanitizer (#23348)
+- harden Tabby OpenCode profile repair (#23344)
+- harden canonical guard default branch detection (#23343)
+- align quickfile MCP template paths (#23341)
+- improve skills search matching (#23340)
+- harden body-file auto-signature test (#23337)
+- normalize function complexity names (#23334)
+- clean up signed gh body-file temp copies (#23326)
+
 ## [3.15.25] - 2026-05-10
 
 ### Fixed
@@ -38,12 +1318,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - improve capability discovery catalogue (#23301)
 - ignore closed stale dashboards (#23298)
-
-## [3.15.22] - 2026-05-10
-
-### Fixed
-
-- clean up Tabby title lint (#23297)
 
 ## [3.15.22] - 2026-05-10
 
@@ -248,44 +1522,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - reconcile missing task counter files (#23208)
 - refine required-check terminal classification (#23205)
-- block consolidated issue redispatch (#23189)
-- preserve explicit prelaunch failure reasons (#23185)
-- consolidate dispatch circuit comment parsing (#23184)
-- handle protected counter reconciliation pushes (#23182)
-- localize dashboard alias parsing variables (#23181)
-- cache review gate success contexts (#23177)
-- streamline linux scheduler cron reconciliation (#23179)
-- cache dashboard identity aliases for migration
-- reduce CI check polling for merge feedback (#23176)
-- guard pulse duplicate issue label lookup (#23175)
-- paginate dashboard freshness issue listing (#23174)
-- harden opencode setup validation (#23171)
-- tighten review-feedback supersession matching (#23172)
-- guard git switch dash in canonical checkout (#23167)
-
-## [3.15.2] - 2026-05-08
-
-### Added
-
-- add scoped setup deploy commands (#23145)
-
-### Changed
-
-- Tests: cover pulse merge conflict label safety (#23202)
-- Tests: cover dashboard freshness JSON fallback (#23204)
-- Tests: cover git checkout dash canonical guard (#23203)
-- Performance: reuse prepared review gate status contexts (#23201)
-- Tests: cover scheduler crontab I/O reuse (#23200)
-- Tests: cover pulse stuck null author parsing (#23188)
-- Documentation: update native auto-merge return docs (#23183)
-- Performance: cache privacy script reference allowlist (#23180)
-- Maintenance: update simplification state registry
-- Performance: consolidate review gate list jq lookups (#23173)
-- Documentation: clarify automation safety invariants (#23169)
-- Tests: simplify git safety guard mock setup (#23168)
-
-### Fixed
-
 - block consolidated issue redispatch (#23189)
 - preserve explicit prelaunch failure reasons (#23185)
 - consolidate dispatch circuit comment parsing (#23184)
@@ -902,13 +2138,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.14.44] - 2026-05-04
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.14.43] - 2026-05-04
 
@@ -1239,7 +2473,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - re-checkout framework after caller checkout in sync-on-pr-merge (#22614)
-- initialise multi-var locals in _compose_unfiled_phases_note (#22611)
+- initialize multi-var locals in _compose_unfiled_phases_note (#22611)
 - guard NMR timestamp jq parsing (#22603)
 - verify pulse merge label fetch behavior (#22602)
 - extract all release completion task IDs (#22600)
@@ -1594,7 +2828,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.13.88] - 2026-05-01
 
 ### Changed
@@ -1618,7 +2851,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.13.85] - 2026-05-01
 
@@ -1685,7 +2917,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.13.79] - 2026-05-01
 
@@ -1768,13 +2999,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.13.70] - 2026-05-01
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.13.69] - 2026-05-01
 
@@ -1977,7 +3206,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.13.49] - 2026-05-01
 
 ### Changed
@@ -2056,7 +3284,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.13.40] - 2026-05-01
 
 ### Changed
@@ -2127,7 +3354,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.13.31] - 2026-05-01
 
@@ -2506,7 +3732,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - split keyword-research-helper.sh into orchestrator + 3 sub-libraries (#21684)
 - split ip-reputation-helper.sh into orchestrator + 4 sub-libraries (#21688)
 - extend worktree exclusions to Linux indexers (tracker3, baloo) (#21702)
-- t2916 honour interactive-session claim stamps in worktree sweep (GH#21074) (#21705)
+- t2916 honor interactive-session claim stamps in worktree sweep (GH#21074) (#21705)
 - add _resolve_log_dir to shared-constants.sh, replace hardcoded log paths in runners (#21701)
 - split memory-embeddings-helper.sh into orchestrator + 2 sub-libraries (#21686)
 
@@ -2534,7 +3760,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Maintenance: mark t3058 complete (pr:#21797 testing:runtime-verified)
 - Maintenance: sync ref:GH#21798 to TODO.md [skip ci]
 - Maintenance: mark t3052 complete (pr:#21767 completed:2026-04-29) [skip ci]
-- extend t2449 worker-briefed auto-merge gate to honour cryptographic approval as OWNER/MEMBER bypass (#21767)
+- extend t2449 worker-briefed auto-merge gate to honor cryptographic approval as OWNER/MEMBER bypass (#21767)
 - fix jq ARG_MAX overflow — pass checks_json via stdin instead of --argjson (#21778)
 - Maintenance: mark t3057 complete (pr:#21792 completed:2026-04-29) [skip ci]
 - replace lifetime-avg CPU with interval-sampled delta in _watchdog_tree_cpu (#21792)
@@ -3473,7 +4699,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Maintenance: sync ref:GH#20812 to TODO.md [skip ci]
 - align Complexity Impact thresholds — warning at 80-100 lines, mandatory refactor at >100 (#20805)
 - simplify jq abs calculation and remove 2>/dev/null in co-temporality guard (#20806)
-- fix _usage off-by-one and hoist _reusable_escaped out of per-repo loop (#20809)
+- fix `_usage` off-by-one and hoist `_reusable_escaped` out of per-repo loop (#20809)
 - robustify release_interactive_claim_on_merge regex and add pre-guard (#20810)
 - Refactor: consolidate dual gh pr view calls into single call in _attempt_pr_ci_rebase_retry (GH#20793) (#20799)
 - Maintenance: mark t2808 complete (pr:#20783 completed:2026-04-24) [skip ci]
@@ -3519,7 +4745,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - migrate review-bot-gate.yml to reusable-workflow pattern (#20748)
 - Maintenance: sync ref:GH#20753 to TODO.md [skip ci]
 - Maintenance: mark t2802 complete (pr:#20742 completed:2026-04-24) [skip ci]
-- explicit origin/<default> base for new worktrees + scope-leak detection in conflict-feedback (#20742)
+- explicit origin/`<default>` base for new worktrees + scope-leak detection in conflict-feedback (#20742)
 - Maintenance: sync ref:GH#20750 to TODO.md [skip ci]
 - Refactor: split prompt-guard-helper.sh into focused sub-libraries (#20746)
 - Maintenance: sync ref:GH#20747 to TODO.md [skip ci]
@@ -3698,7 +4924,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - fix node-ID null guard, parent-process cache init, and rest-fallback optional arg (#20536)
 - complete POSIX regex replacement doc in t2742 TODO entry (#20539)
 - guard inner shift in _gh_auto_link_sub_issue arg parser against $#=0 (#20540)
-- fix shared-phase-filing: description brackets, child_ref tail-1, dedup regex anchor, _parent_json guard (#20531)
+- fix shared-phase-filing: description brackets, `child_ref` tail-1, dedup regex anchor, `_parent_json` guard (#20531)
 - Maintenance: sync ref:GH#20530 to TODO.md [skip ci]
 - add aidevops review-gate CLI for configuring rate_limit_behavior (#20527)
 - harden standalone-source tests — LC_ALL=C, safer path arg, declare -f (#20528)
@@ -3847,7 +5073,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - simplify AIDEVOPS_SESSION_ORIGIN assignment in health dashboard (#20381)
 - fix _worktree_resolve_abs_path double-slash and pwd vs pwd -P inconsistency (#20383)
 - Maintenance: mark t2712 complete (pr:#20389 completed:2026-04-21) [skip ci]
-- rename _DIRTY_ACTION_ESCALATE to _DIRTY_ACTION_NOTIFY in pulse-dirty-pr-sweep.sh (#20389)
+- rename `_DIRTY_ACTION_ESCALATE` to `_DIRTY_ACTION_NOTIFY` in pulse-dirty-pr-sweep.sh (#20389)
 - replace misleading 'high/critical' aggregate with per-severity inline summary (BLOCKER · CRITICAL · MAJOR · MINOR · INFO) (#20387)
 - URL-encode labels and assignee in _rest_issue_list query params (#20386)
 - Maintenance: sync ref:GH#20384 to TODO.md [skip ci]
@@ -4202,7 +5428,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Maintenance: mark t2366 complete (pr:#19878 completed:2026-04-19) [skip ci]
 - feat(routines): add r914 daily repo-aidevops-health keeper (#19878)
 - Maintenance: mark t2384 complete (pr:#19875 completed:2026-04-19) [skip ci]
-- implement 5-layer defence against enrich-path data-loss bug (#19876)
+- implement 5-layer defense against enrich-path data-loss bug (#19876)
 - chore(todo): log brief + TODO entry for pre-commit hook ratcheting (#19875)
 
 ### Fixed
@@ -4295,7 +5521,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - tabby-profile-sync: parse folded YAML, detect worktrees via git (#19793)
 - add curl retry-with-backoff to validate-version-consistency.sh (#19791)
-- add ratchet gate rule and gh pr checks cancelled-vs-fail note
+- add ratchet gate rule and gh pr checks canceled-vs-fail note
 - briefs for self-healing pulse framework improvements (#19781)
 - Maintenance: update simplification state registry
 - document origin:interactive auto-merge window (#19776)
@@ -4317,7 +5543,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - brief — macOS-specific briefs fail Ubuntu AC verification (planning-only) (#19725)
 - Maintenance: update simplification state registry
 - correct opencode upstream slug to anomalyco/opencode in docs and configs (#19728)
-- add paths-ignore to Qlty workflows to suppress docs-only cancelled-as-fail noise (#19726)
+- add paths-ignore to Qlty workflows to suppress docs-only canceled-as-fail noise (#19726)
 - fix(pre-commit): make TODO.md duplicate-ID check diff-aware (#19712)
 
 ### Fixed
@@ -4686,7 +5912,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - fix(pulse): reconcile_completed_parent_tasks consults sub-issue graph before body regex (#19250)
-- add brief and TODO for voice-bridge/normalise-markdown test coverage (#19245)
+- add brief and TODO for voice-bridge/normalize-markdown test coverage (#19245)
 
 ## [3.8.55] - 2026-04-16
 
@@ -4694,7 +5920,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - t2135: feat(ci): post-merge brief acceptance criteria verification (#19246)
 - plan qlty A-grade file-complexity campaign (6 tasks, 20 smells) (#19228)
-- refactor(misc-scripts): decompose voice-bridge/normalise-markdown/tabby-profile-sync (#19238)
+- refactor(misc-scripts): decompose voice-bridge/normalize-markdown/tabby-profile-sync (#19238)
 
 ### Fixed
 
@@ -4711,7 +5937,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.8.52] - 2026-04-16
 
@@ -5084,7 +6309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - bump NESTING_DEPTH_THRESHOLD from 272 to 279 (#18920)
 - Maintenance: update simplification state registry
 - decompose opencode plugin cluster — cursor/proxy.js, ttsr.mjs, provider-auth.mjs, google-proxy.mjs (#18906)
-- add TEST_ROOT guard clauses to _write_gh_stub_binary and _setup_gh_stub_globals (#18913)
+- add `TEST_ROOT` guard clauses to `_write_gh_stub_binary` and `_setup_gh_stub_globals` (#18913)
 - Maintenance: update simplification state registry
 - fix grammar in ubicloud.md — add 'versions' noun after self-hosted (#18909)
 - refactor(claude-proxy): drop Codacy complexity + non-static dispatch findings (#18900)
@@ -5105,7 +6330,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - jq null-fallback and single-pass consolidation (GH#18866) (#18905)
 - harden jq filter and pgrep patterns in pulse-issue-reconcile.sh (#18910)
-- optimise enrichment helpers in pulse-quality-debt.sh (#18911)
+- optimize enrichment helpers in pulse-quality-debt.sh (#18911)
 - address review bot suggestions from PR #18676 (#18908)
 - guard getent empty output in real-home resolvers (#18907)
 - apply gemini review fixes to issue-sync-helper.sh enrich helpers (#18897)
@@ -5201,7 +6426,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactor: decompose generate_subagent_stub() into focused helper functions (#18717)
 - Maintenance: ratchet down FUNCTION_COMPLEXITY_THRESHOLD 46 → 43 (GH#18695) (#18703)
 - Maintenance: update simplification state registry
-- extract _read_lock_pid + _handle_existing_lock from acquire_instance_lock (#18701)
+- extract `_read_lock_pid` + `_handle_existing_lock` from acquire_instance_lock (#18701)
 - Refactor: split _normalize_unassign_stale into focused helpers (GH#18690) (#18700)
 
 ### Fixed
@@ -5269,7 +6494,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.8.3] - 2026-04-13
 
@@ -5500,7 +6724,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.6.243] - 2026-04-12
 
@@ -6102,7 +7325,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `_install_pulse_systemd` missing PATH env var causes workers to exit 127 on Linux; add `Environment=PATH=...` to service unit matching launchd plist behaviour (GH#17405)
+- `_install_pulse_systemd` missing PATH env var causes workers to exit 127 on Linux; add `Environment=PATH=...` to service unit matching launchd plist behavior (GH#17405)
 - `_install_pulse_systemd` timer stalls on mid-session install due to missing `OnActiveSec`; add `OnActiveSec=10s` to bootstrap first service run (GH#17405)
 
 ## [3.6.89] - 2026-04-04
@@ -6145,7 +7368,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fix broken chapter links in production-video.md index — corrected 9 paths from video/NN-*.md to production-video-NN-*.md (#15684)
+- Fix broken chapter links in production-video.md index — corrected 9 paths from `video/NN-*.md` to `production-video-NN-*.md` (#15684)
 
 ## [3.5.635] - 2026-04-02
 
@@ -6433,13 +7656,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.529] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.528] - 2026-03-31
 
@@ -6459,7 +7680,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.525] - 2026-03-31
 
@@ -6501,7 +7721,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.521] - 2026-03-31
 
 ### Fixed
@@ -6513,7 +7732,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.519] - 2026-03-31
 
@@ -6550,20 +7768,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.515] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
 
-
 ## [3.5.514] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.513] - 2026-03-31
 
@@ -6578,20 +7793,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.511] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
 
-
 ## [3.5.510] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.509] - 2026-03-31
 
@@ -6605,13 +7817,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.507] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.506] - 2026-03-31
 
@@ -6643,13 +7853,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.500] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.499] - 2026-03-31
 
@@ -6657,13 +7865,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.498] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.497] - 2026-03-31
 
@@ -6671,13 +7877,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.496] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.495] - 2026-03-31
 
@@ -6685,13 +7889,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.494] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.493] - 2026-03-31
 
@@ -6699,13 +7901,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.492] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.491] - 2026-03-31
 
@@ -6713,13 +7913,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.490] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.489] - 2026-03-31
 
@@ -6727,13 +7925,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.488] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.487] - 2026-03-31
 
@@ -6741,13 +7937,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.486] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.485] - 2026-03-31
 
@@ -6755,13 +7949,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.484] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.483] - 2026-03-31
 
@@ -6769,13 +7961,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.482] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.481] - 2026-03-31
 
@@ -6783,13 +7973,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.480] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.479] - 2026-03-31
 
@@ -6797,20 +7985,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.478] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
 
-
 ## [3.5.477] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.476] - 2026-03-31
 
@@ -6829,13 +8014,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.474] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.473] - 2026-03-31
 
@@ -6843,13 +8026,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.472] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.471] - 2026-03-31
 
@@ -6863,7 +8044,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.469] - 2026-03-31
 
 ### Changed
@@ -6875,7 +8055,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.467] - 2026-03-31
 
@@ -6889,13 +8068,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.5.465] - 2026-03-31
 
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.464] - 2026-03-30
 
@@ -6945,7 +8122,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.459] - 2026-03-30
 
@@ -7011,7 +8187,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.5.410] - 2026-03-30
 
@@ -7289,7 +8464,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [3.1.442] - 2026-03-28
 
 ### Changed
@@ -7332,7 +8506,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.1.106] - 2026-03-25
 
@@ -7563,7 +8736,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [3.1.34] - 2026-03-21
 
@@ -8076,7 +9248,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Version bump and maintenance updates
 
-
 ## [2.172.12] - 2026-03-13
 
 ### Fixed
@@ -8150,7 +9321,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [2.172.5] - 2026-03-12
 
@@ -8390,7 +9560,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Version bump and maintenance updates
-
 
 ## [2.167.1] - 2026-03-09
 
@@ -8839,7 +10008,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - replace arbitrary 5-minute time budget with 'run until done, then exit' (#2466)
 - use full path scripts/commands/pulse.md in all agent references (#2459)
 - add mandatory OPEN state check before dispatching workers (#2455)
-- pulse should close open issues labelled status:done (#2456)
+- pulse should close open issues labeled status:done (#2456)
 - add broader dedup search before fallback issue creation (#2447) (#2454)
 - add local dev routing to Build+ Domain Expertise Check table (#2453)
 
@@ -9571,7 +10740,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - resolve SIGPIPE in _launchd_is_loaded under pipefail (t1265)
 - skip LaunchAgent plist rewrite when content unchanged (t1265)
 - supervisor auto-pickup skips tasks with assignee:/started: fields (t1062) (#1519)
-- exclude cancelled tasks from 7-day success rate metric (t1248) (#1983)
+- exclude canceled tasks from 7-day success rate metric (t1248) (#1983)
 
 ## [2.117.0] - 2026-02-19
 
@@ -9595,13 +10764,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - add multi-platform detection and API adapters for Gitea/GitLab issue sync (t1120.3) (#1815)
 - expand blocker statuses for auto-dispatch eligibility assessment (t1188.1) (#1810)
 - add multi-repo TODO scanning and auto-dispatch eligibility to AI context (#1801)
-- filter verified/cancelled tasks from AI context snapshot (t1178) (#1779)
+- filter verified/canceled tasks from AI context snapshot (t1178) (#1779)
 - add supervisor DB cross-reference to issue audit to reduce false positives (t1156) (#1773)
 - add auto-dispatch eligibility assessment to supervisor AI reasoning (t1134) (#1782)
 - add Phase 0.6 queue-dispatchability reconciliation (t1180) (#1783)
 - add model cost-efficiency check to supervisor dispatch (t1149) (#1769)
 - add completed-task exclusion list to supervisor AI context (t1148) (#1768)
-- add cancelled-task sync between supervisor DB and TODO.md (t1131) (#1727)
+- add canceled-task sync between supervisor DB and TODO.md (t1131) (#1727)
 - Phase 3a — auto-adopt untracked PRs into supervisor pipeline (#1704)
 - add supervisor self-healing for stuck evaluating tasks, dispatch stalls, and action executor robustness (#1683)
 - add last_skill_check and skill_updates_applied to auto-update state schema (t1081.3) (#1638)
@@ -9925,7 +11094,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- integrate normalise with convert pipeline (#1456)
+- integrate normalize with convert pipeline (#1456)
 
 ## [2.113.1] - 2026-02-14
 
@@ -9978,7 +11147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - restore ALL_STATUS_LABELS constant lost in t1031 modularisation (t1035) (#1375)
 - resolve TODO.md merge conflict markers (t1010/t1025 duplicate)
 - use relative path as agent name to prevent collisions (t1015) (#1336)
-- health issue progress uses actionable count, excluding cancelled/skipped (#1323)
+- health issue progress uses actionable count, excluding canceled/skipped (#1323)
 - wire resolve_rebase_conflicts() into rebase_sibling_pr() for AI-assisted conflict resolution (t1021) (#1322)
 - plugin config hook overrides worker osgrep disabled setting (#1296)
 - add PATH and GH_TOKEN detection to supervisor cron install (t1006) (#1291)
@@ -10583,7 +11752,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documentation: update t135.12 to use _archive/ folder name (user preference)
 - Documentation: add t135 codebase quality hardening plan from Opus 4.6 review
 - Documentation: mention scan results audit trail in README (#408)
-- Documentation: add gitignore *credential* pattern note to t131.1
+- Documentation: add gitignore `*credential*` pattern note to t131.1
 - Documentation: add PRD and tasks for gopass integration & credentials rename (t131)
 - Documentation: add gopass integration plan (t131) to TODO and PLANS
 
@@ -12908,7 +14077,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AGENTS.md guidance system
 - Basic quality assurance setup
 
-[Unreleased]: https://github.com/marcusquinn/aidevops/compare/v2.29.0...HEAD
+[Unreleased]: https://github.com/marcusquinn/aidevops/compare/v3.17.28...HEAD
+[3.17.28]: https://github.com/marcusquinn/aidevops/compare/v3.17.27...v3.17.28
+[3.17.27]: https://github.com/marcusquinn/aidevops/compare/v3.17.26...v3.17.27
 [2.29.0]: https://github.com/marcusquinn/aidevops/compare/v2.28.0...v2.29.0
 [2.28.0]: https://github.com/marcusquinn/aidevops/compare/v2.27.4...v2.28.0
 [2.27.4]: https://github.com/marcusquinn/aidevops/compare/v2.27.3...v2.27.4

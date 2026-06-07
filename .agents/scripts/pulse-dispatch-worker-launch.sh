@@ -302,7 +302,10 @@ _dlw_comment_bloat_requires_clean_room() {
 	local repo_slug="$2"
 	local precomputed_metrics="${3:-}"
 
-	local comments ops zero chars
+	local comments=""
+	local ops=""
+	local zero=""
+	local chars=""
 	if [[ -z "$precomputed_metrics" ]]; then
 		precomputed_metrics=$(_dlw_comment_bloat_metrics "$issue_number" "$repo_slug")
 	fi
@@ -421,7 +424,10 @@ _dlw_prepare_prompt_for_launch() {
 	local original_prompt="$4"
 	local precomputed_comment_metrics="${5:-}"
 	local comment_metrics=""
-	local comments ops metrics_zero_count chars
+	local comments=""
+	local ops=""
+	local metrics_zero_count=""
+	local chars=""
 	local precomputed_zero_count=""
 
 	comment_metrics="$precomputed_comment_metrics"
@@ -459,7 +465,10 @@ _dlw_hold_repeated_zero_output() {
 	local repo_slug="$2"
 	local precomputed_comment_metrics="${3:-}"
 	local comment_metrics=""
-	local comments ops metrics_zero_count chars
+	local comments=""
+	local ops=""
+	local metrics_zero_count=""
+	local chars=""
 	local precomputed_zero_count=""
 
 	comment_metrics="$precomputed_comment_metrics"
@@ -844,6 +853,51 @@ _dlw_systemd_unit_name() {
 	return 0
 }
 
+_dlw_systemd_resolve_main_pid() {
+	local unit_name="$1"
+	local issue_number="$2"
+	local wait_i=0 snapshot="" main_pid="" active_state="" sub_state="" key="" value=""
+
+	while [[ "$wait_i" -lt 15 ]]; do
+		snapshot=$(systemctl --user show "$unit_name" -p MainPID -p ActiveState -p SubState 2>/dev/null || true)
+		main_pid=""
+		active_state=""
+		sub_state=""
+		while IFS='=' read -r key value || [[ -n "$key" ]]; do
+			case "$key" in
+				MainPID)
+					main_pid="$value"
+					;;
+				ActiveState)
+					active_state="$value"
+					;;
+				SubState)
+					sub_state="$value"
+					;;
+			esac
+		done <<<"$snapshot"
+
+		if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]]; then
+			echo "[dispatch_worker_launch] WARNING: systemd worker PID handoff missing for unit ${unit_name}; resolved MainPID=${main_pid} state=${active_state:-unknown}/${sub_state:-unknown} via systemctl, not launching fallback" >>"$LOGFILE"
+			printf '%s\n' "$main_pid"
+			return 0
+		fi
+
+		case "${active_state:-unknown}" in
+			inactive|failed)
+				echo "[dispatch_worker_launch] systemd unit ${unit_name} has no live MainPID state=${active_state:-unknown}/${sub_state:-unknown}; falling back to setsid/nohup for #${issue_number}" >>"$LOGFILE"
+				return 1
+				;;
+		esac
+
+		sleep 0.2
+		wait_i=$((wait_i + 1))
+	done
+
+	echo "[dispatch_worker_launch] ERROR: systemd-run launched ${unit_name} for #${issue_number} but no child PID or live MainPID was reported" >>"$LOGFILE"
+	return 1
+}
+
 _dlw_exec_systemd_user_service() {
 	local unit_prefix="$1"
 	local worker_log="$2"
@@ -888,12 +942,13 @@ _dlw_exec_systemd_user_service() {
 	rm -f "$pid_file" 2>/dev/null || true
 
 	if [[ "$service_pid" =~ ^[0-9]+$ ]]; then
+		echo "[dispatch_worker_launch] systemd unit ${unit_name} reported child PID=${service_pid} for #${issue_number}" >>"$LOGFILE"
 		printf '%s\n' "$service_pid"
 		return 0
 	fi
 
-	echo "[dispatch_worker_launch] ERROR: systemd-run launched ${unit_name} for #${issue_number} but no child PID was reported" >>"$LOGFILE"
-	return 1
+	_dlw_systemd_resolve_main_pid "$unit_name" "$issue_number"
+	return $?
 }
 
 # Execute a worker command via systemd-run (Linux user services) or setsid +
@@ -914,6 +969,13 @@ _dlw_exec_detached() {
 	local worker_log="$1"
 	local issue_number="$2"
 	shift 2
+	local -a worker_command=(
+		env
+		AIDEVOPS_GH_PR_LIST_CACHE_DISABLE=1
+		AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE=1
+		PULSE_PR_LIST_PROVIDER_CACHE_DISABLE=1
+		"$@"
+	)
 
 	# t2814 (Phase 3, fix #3): Close inherited file descriptors >2 before
 	# exec to prevent FD leak from the pulse parent into the worker. The
@@ -931,7 +993,7 @@ _dlw_exec_detached() {
 
 	local worker_pid
 	if _dlw_systemd_user_service_available; then
-		if worker_pid=$(_dlw_exec_systemd_user_service "aidevops-worker" "$worker_log" "$issue_number" "$@"); then
+		if worker_pid=$(_dlw_exec_systemd_user_service "aidevops-worker" "$worker_log" "$issue_number" "${worker_command[@]}"); then
 			echo "[dispatch_worker_launch] Issue #${issue_number}: worker PID=$worker_pid launched via systemd-run transient user service outside pulse cgroup" >>"$LOGFILE"
 		else
 			echo "[dispatch_worker_launch] WARNING: systemd-run worker launch failed for #${issue_number}; falling back to setsid/nohup" >>"$LOGFILE"
@@ -939,7 +1001,7 @@ _dlw_exec_detached() {
 	fi
 
 	if [[ -z "${worker_pid:-}" ]] && command -v setsid >/dev/null 2>&1; then
-		setsid nohup "$@" </dev/null >>"$worker_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+		setsid nohup "${worker_command[@]}" </dev/null >>"$worker_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 		worker_pid="$!"
 		# Log the detached PGID for diagnostics (should differ from pulse PGID)
 		local worker_pgid="" pulse_pgid=""
@@ -950,7 +1012,7 @@ _dlw_exec_detached() {
 		echo "[dispatch_worker_launch] Issue #${issue_number}: worker PID=$worker_pid PGID=$worker_pgid (setsid detached from pulse PGID=$pulse_pgid; FDs 3-9 closed for t2814)" >>"$LOGFILE"
 	elif [[ -z "${worker_pid:-}" ]]; then
 		echo "[dispatch_worker_launch] ERROR: setsid missing — worker isolation broken; worker shares pulse PGID and will be killed on next pulse restart. Run: aidevops update (GH#21102)" >>"$LOGFILE"
-		nohup "$@" </dev/null >>"$worker_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
+		nohup "${worker_command[@]}" </dev/null >>"$worker_log" 2>&1 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- &
 		worker_pid="$!"
 	fi
 
@@ -1191,16 +1253,17 @@ _dlw_spawn_lifecycle_observer() {
 #
 # Arguments:
 #   $1  - issue_number
-#   $2  - dispatch_title
-#   $3  - issue_title
-#   $4  - session_key
-#   $5  - worker_log (path from _dlw_setup_worker_log)
-#   $6  - prompt
-#   $7  - repo_path
-#   $8  - dispatch_model_tier (haiku|sonnet|opus)
-#   $9  - selected_model (may be empty for auto-select)
-#   $10 - worker_worktree_path (may be empty)
-#   $11 - worker_worktree_branch (may be empty)
+#   $2  - repo_slug (owner/repo)
+#   $3  - dispatch_title
+#   $4  - issue_title
+#   $5  - session_key
+#   $6  - worker_log (path from _dlw_setup_worker_log)
+#   $7  - prompt
+#   $8  - repo_path
+#   $9  - dispatch_model_tier (haiku|sonnet|opus)
+#   $10 - selected_model (may be empty for auto-select)
+#   $11 - worker_worktree_path (may be empty)
+#   $12 - worker_worktree_branch (may be empty)
 # Stdout: worker PID
 #######################################
 _dlw_build_worker_title() {
@@ -1238,16 +1301,17 @@ _dlw_build_worker_title() {
 #######################################
 _dlw_nohup_launch() {
 	local issue_number="$1"
-	local dispatch_title="$2"
-	local issue_title="$3"
-	local session_key="$4"
-	local worker_log="$5"
-	local prompt="$6"
-	local repo_path="$7"
-	local dispatch_model_tier="$8"
-	local selected_model="$9"
-	local worker_worktree_path="${10}"
-	local worker_worktree_branch="${11}"
+	local repo_slug="$2"
+	local dispatch_title="$3"
+	local issue_title="$4"
+	local session_key="$5"
+	local worker_log="$6"
+	local prompt="$7"
+	local repo_path="$8"
+	local dispatch_model_tier="$9"
+	local selected_model="${10}"
+	local worker_worktree_path="${11}"
+	local worker_worktree_branch="${12}"
 
 	# Use issue title as session title for searchable history, but keep the
 	# issue marker at the beginning so Tabby tabs and OpenCode session search
@@ -1267,7 +1331,11 @@ _dlw_nohup_launch() {
 		env
 		HEADLESS=1
 		FULL_LOOP_HEADLESS=true
+		AIDEVOPS_SESSION_ORIGIN=worker
+		AIDEVOPS_HEADLESS=true
 		WORKER_ISSUE_NUMBER="$issue_number"
+		WORKER_REPO_SLUG="$repo_slug"
+		WORKER_GITHUB_LOGIN="$self_login"
 		AIDEVOPS_ALLOW_WORKER_WORKTREE_OWNER_TRANSFER=1
 	)
 	if _dlw_min_worker_floor_active; then
@@ -1567,6 +1635,64 @@ _dlw_canary_preflight() {
 	return 1
 }
 
+_dlw_blocked_by_hard_stop() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local issue_meta_json="$3"
+
+	if [[ "$(type -t is_blocked_by_unresolved 2>/dev/null)" != "function" ]]; then
+		return 1
+	fi
+
+	local issue_body=""
+	issue_body=$(printf '%s' "$issue_meta_json" | jq -r '.body // ""' 2>/dev/null) || issue_body=""
+	if is_blocked_by_unresolved "$issue_body" "$repo_slug" "$issue_number"; then
+		echo "[dispatch_with_dedup] Hard-stop before worker bootstrap for #${issue_number} in ${repo_slug}: unresolved blocked-by dependency (GH#23932)" >>"$LOGFILE"
+		return 0
+	fi
+
+	return 1
+}
+
+_dlw_issue_still_open_before_claim() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local refreshed_state=""
+
+	# GH#24437: the canonical metadata bundle is fetched before canary/model
+	# preflight and may be stale by the time the dispatcher is about to publish a
+	# persistent DISPATCH_CLAIM. Refresh just the issue state immediately before
+	# cross-runner claim/label/worktree mutation so auto-resolved meta-issues do
+	# not consume worker capacity after they close.
+	refreshed_state=$(gh issue view "$issue_number" --repo "$repo_slug" \
+		--json state --jq '.state // ""' | tr '[:lower:]' '[:upper:]') || refreshed_state=""
+	if [[ -z "$refreshed_state" ]]; then
+		echo "[dispatch_with_dedup] Warning: unable to refresh issue state for #${issue_number} in ${repo_slug} before claim; proceeding with prior dispatch gates" >>"$LOGFILE"
+		return 0
+	fi
+	if [[ "$refreshed_state" != "OPEN" ]]; then
+		echo "[dispatch_with_dedup] Dispatch blocked for #${issue_number} in ${repo_slug}: refreshed issue state before claim is ${refreshed_state} (GH#24437)" >>"$LOGFILE"
+		return 1
+	fi
+
+	return 0
+}
+
+_dlw_preclaim_state_refresh_or_skip() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local _ds_t0
+
+	_ds_t0=$(_ds_now_ns)
+	if ! _dlw_issue_still_open_before_claim "$issue_number" "$repo_slug"; then
+		_ds_record "$issue_number" "$repo_slug" "preclaim_state_refresh" "$_ds_t0"
+		return 1
+	fi
+	_ds_record "$issue_number" "$repo_slug" "preclaim_state_refresh" "$_ds_t0"
+
+	return 0
+}
+
 #######################################
 # Thin orchestrator for worker launch. Delegates each distinct concern
 # (assignment + labels, log files, model resolution, issue lock, repo pull,
@@ -1607,9 +1733,11 @@ _dispatch_launch_worker() {
 	_ds_t0=$(_ds_now_ns)
 	_dlw_resolve_tier_and_model "$issue_meta_json" "$model_override"
 	_ds_record "$issue_number" "$repo_slug" "resolve_tier_model" "$_ds_t0"
-	local dispatch_tier="$_DLW_DISPATCH_TIER"
-	local dispatch_model_tier="$_DLW_DISPATCH_MODEL_TIER"
-	local selected_model="$_DLW_SELECTED_MODEL"
+	local dispatch_tier="$_DLW_DISPATCH_TIER" dispatch_model_tier="$_DLW_DISPATCH_MODEL_TIER" selected_model="$_DLW_SELECTED_MODEL"
+
+	if _dlw_blocked_by_hard_stop "$issue_number" "$repo_slug" "$issue_meta_json"; then
+		return 2
+	fi
 
 	_ds_t0=$(_ds_now_ns)
 	if ! _dlw_canary_preflight "$issue_number" "$repo_slug" "$worker_log" \
@@ -1618,6 +1746,8 @@ _dispatch_launch_worker() {
 		return 2
 	fi
 	_ds_record "$issue_number" "$repo_slug" "canary_preflight" "$_ds_t0"
+
+	_dlw_preclaim_state_refresh_or_skip "$issue_number" "$repo_slug" || return 2
 
 	if ! _dlw_claim_lock_after_canary "$issue_number" "$repo_slug" "$self_login"; then
 		return 2
@@ -1668,7 +1798,7 @@ _dispatch_launch_worker() {
 	local worker_pid
 	local launch_prompt=""
 	launch_prompt=$(_dlw_prepare_prompt_for_launch "$issue_number" "$repo_slug" "$issue_title" "$prompt" "$zero_output_comment_metrics")
-	worker_pid=$(_dlw_nohup_launch "$issue_number" "$dispatch_title" "$issue_title" \
+	worker_pid=$(_dlw_nohup_launch "$issue_number" "$repo_slug" "$dispatch_title" "$issue_title" \
 		"$session_key" "$worker_log" "$launch_prompt" "$repo_path" \
 		"$dispatch_model_tier" "$selected_model" \
 		"$worker_worktree_path" "$worker_worktree_branch")

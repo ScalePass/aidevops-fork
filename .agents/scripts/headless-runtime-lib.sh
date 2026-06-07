@@ -79,7 +79,12 @@ SQL
 
 db_query() {
 	local query="$1"
-	sqlite3 -cmd ".timeout 5000" "$STATE_DB" "$query" 2>/dev/null
+	sqlite3_with_timeout "$STATE_DB" "$query" 2>/dev/null
+	return $?
+}
+
+sqlite3_with_timeout() {
+	sqlite3 -cmd ".timeout 5000" "$@"
 	return $?
 }
 
@@ -644,7 +649,7 @@ You must drive autonomously to completion or an evidence-backed BLOCKED outcome.
 
 Setup shortcuts -- the dispatcher has already done these for you:
 - Your worktree is pre-created. $WORKER_WORKTREE_PATH contains the path. You are
-  already in the worktree on a feature branch. Do NOT call pre-edit-check.sh,
+  already in a safe linked worktree. Do NOT call pre-edit-check.sh,
   worktree-helper.sh, or session-rename tools under any circumstances.
   Pre-creation is guaranteed by the dispatcher (GH#21353 / t2983 Fix C). If
   WORKER_WORKTREE_PATH is unset, the headless runtime has already aborted — you
@@ -654,9 +659,10 @@ Setup shortcuts -- the dispatcher has already done these for you:
   is already set by the dispatcher with the issue marker first (for example,
   `Issue #123: succinct description`).
 
-Key file paths (use these directly, do NOT search for them):
-- Full-loop workflow: .agents/scripts/commands/full-loop.md
-- All agent scripts live under .agents/scripts/ (not scripts/ at root)
+Key framework file paths (use these directly, do NOT search for them):
+- Normal project repos: full-loop workflow is deployed at ~/.aidevops/agents/scripts/commands/full-loop.md
+- Normal project repos: aidevops framework scripts live under ~/.aidevops/agents/scripts/ (not project-local .agents/scripts/)
+- Aidevops source repo only: the same files are edited at .agents/scripts/commands/full-loop.md and under .agents/scripts/
 
 Implementation approach:
 1. Read the issue body FIRST (gh issue view $WORKER_ISSUE_NUMBER). Look for a "Worker Guidance" or "How" section -- it contains the files to modify, reference patterns, and verification commands. Follow these directly when present.
@@ -677,6 +683,11 @@ If a tool call returns empty output, it usually means the path or pattern was wr
 
 Worktree edit verification (GH#22816):
 After any file edit in the pre-created linked worktree, verify the worktree path still exists and the change is visible before claiming success or pushing. Minimum evidence: git status --short --branch from $WORKER_WORKTREE_PATH plus a diff/stat or commit containing the edited files. If the worktree or edits disappeared, reconstruct from available evidence before reporting completion.
+
+Incremental WIP commits (GH#23677):
+- Make a local WIP commit as soon as the first meaningful edit is coherent, then after each logical change. Use conventional WIP subjects such as `wip: preserve cleanup safety` until the final squash/PR commit.
+- Do not leave valuable work only as dirty files while continuing to explore. A first WIP commit makes the worktree cleanup-visible as active real work even before a PR exists, and gives the runtime/watchdog a reachable commit to push or recover.
+- If a commit hook blocks a WIP commit, fix the issue when practical; otherwise preserve the diff with a clear BLOCKED outcome rather than resetting or continuing with unprotected dirty state.
 EOF
 	return 0
 }
@@ -1002,6 +1013,52 @@ _watchdog_kill() {
 # --- Section 9: DB Merge ---
 
 #######################################
+# Copy one OpenCode migration ledger table from shared DB to worker DB.
+# Args: $1 = worker DB path, $2 = shared DB path, $3 = ledger table name.
+# The ledger table list is intentionally allowlisted by the caller; this helper
+# creates a missing worker-side table from the shared DB schema before copying
+# rows so OpenCode does not replay migrations against pre-created user tables.
+#######################################
+_copy_worker_db_migration_ledger_table() {
+	local worker_db="$1"
+	local shared_db="$2"
+	local ledger_table="$3"
+	local has_shared has_worker shared_db_sql
+
+	has_shared=$(sqlite3_with_timeout "$shared_db" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ledger_table}' LIMIT 1;" 2>/dev/null || true)
+	[[ -n "$has_shared" ]] || return 0
+
+	has_worker=$(sqlite3_with_timeout "$worker_db" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ledger_table}' LIMIT 1;" 2>/dev/null || true)
+	if [[ -z "$has_worker" ]]; then
+		sqlite3_with_timeout "$shared_db" ".schema ${ledger_table}" 2>/dev/null | sqlite3_with_timeout "$worker_db" >/dev/null 2>&1 || true
+	fi
+
+	shared_db_sql=$(sql_escape "$shared_db")
+	sqlite3_with_timeout "$worker_db" <<-SQL >/dev/null 2>&1 || true
+		ATTACH DATABASE '${shared_db_sql}' AS shared;
+		INSERT OR IGNORE INTO main."${ledger_table}" SELECT * FROM shared."${ledger_table}";
+		DETACH DATABASE shared;
+	SQL
+	return 0
+}
+
+#######################################
+# Synchronise all known OpenCode migration ledger tables into worker DB.
+# Args: $1 = worker DB path, $2 = shared DB path.
+#######################################
+_sync_worker_db_migration_ledgers() {
+	local worker_db="$1"
+	local shared_db="$2"
+	local ledger_table
+
+	[[ -f "$worker_db" && -f "$shared_db" ]] || return 0
+	for ledger_table in __drizzle_migrations data_migration migration; do
+		_copy_worker_db_migration_ledger_table "$worker_db" "$shared_db" "$ledger_table"
+	done
+	return 0
+}
+
+#######################################
 # Merge worker's isolated SQLite DB back to the shared DB.
 # Called after worker exits -- no contention risk.
 # Uses ATTACH DATABASE to copy session and message rows.
@@ -1029,6 +1086,77 @@ _merge_worker_db() {
 		INSERT OR IGNORE INTO message SELECT * FROM worker.message;
 		DETACH DATABASE worker;
 	SQL
+	return 0
+}
+
+#######################################
+# Seed a continuation session into a worker's isolated OpenCode DB.
+# Called before `opencode run --session <id> --continue` so retries launched
+# with a fresh XDG_DATA_HOME can resolve the persisted conversation locally.
+# Copies only the selected session and its messages (plus its project row for
+# schema/FK compatibility). Non-fatal: failures fall back to normal runtime
+# stale-session handling.
+#######################################
+_seed_worker_db_session_context() {
+	local isolated_dir="$1"
+	local session_id="$2"
+	local worker_db="${isolated_dir}/opencode/opencode.db"
+	local shared_db="${HOME}/.local/share/opencode/opencode.db"
+
+	[[ -n "$isolated_dir" && -n "$session_id" ]] || return 0
+	[[ -f "$shared_db" ]] || return 0
+	mkdir -p "${isolated_dir}/opencode" 2>/dev/null || return 0
+
+	# Fresh isolated auth dirs may not have a migrated DB yet. Copy the schema from
+	# the shared DB so the targeted row copy has compatible tables without importing
+	# unrelated session/message data. Immediately copy OpenCode migration metadata
+	# too: a schema-only DB has tables but an empty migration ledger, which makes
+	# OpenCode/Drizzle replay CREATE TABLE migrations and fail before continuation
+	# can start.
+	if [[ ! -f "$worker_db" ]]; then
+		sqlite3 -cmd ".timeout 5000" "$shared_db" .schema 2>/dev/null | sqlite3 "$worker_db" >/dev/null 2>&1 || return 0
+	fi
+
+	_sync_worker_db_migration_ledgers "$worker_db" "$shared_db"
+
+	local shared_db_sql session_id_sql
+	shared_db_sql=$(sql_escape "$shared_db")
+	session_id_sql=$(sql_escape "$session_id")
+	sqlite3 "$worker_db" <<-SQL >/dev/null 2>&1 || true
+		.timeout 5000
+		ATTACH DATABASE '${shared_db_sql}' AS shared;
+		INSERT OR IGNORE INTO project SELECT * FROM shared.project
+			WHERE id IN (SELECT project_id FROM shared.session WHERE id = '${session_id_sql}');
+		INSERT OR IGNORE INTO session SELECT * FROM shared.session WHERE id = '${session_id_sql}';
+		INSERT OR IGNORE INTO message SELECT * FROM shared.message WHERE session_id = '${session_id_sql}';
+		DETACH DATABASE shared;
+	SQL
+	return 0
+}
+
+#######################################
+# Synchronise OpenCode migration metadata into a pre-existing worker DB.
+#
+# Pre-warmed isolated DB directories can contain user tables before the worker
+# starts. If the migration ledger is empty/missing, OpenCode/Drizzle replays
+# CREATE TABLE migrations and aborts with errors such as "table project already
+# exists" before the seed prompt reaches the model. Copy only migration ledger
+# tables from the shared DB; session/message data remains isolated.
+#######################################
+_sync_worker_db_migration_metadata() {
+	local isolated_dir="$1"
+	local worker_db="${isolated_dir}/opencode/opencode.db"
+	local shared_db="${HOME}/.local/share/opencode/opencode.db"
+
+	[[ -n "$isolated_dir" ]] || return 0
+	[[ -f "$worker_db" ]] || return 0
+	[[ -f "$shared_db" ]] || return 0
+
+	local has_project
+	has_project=$(sqlite3 "$worker_db" "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project' LIMIT 1;" 2>/dev/null || true)
+	[[ -n "$has_project" ]] || return 0
+
+	_sync_worker_db_migration_ledgers "$worker_db" "$shared_db"
 	return 0
 }
 
@@ -1511,11 +1639,10 @@ _run_canary_test() {
 	local canary_output
 	canary_output=$(mktemp "${TMPDIR:-/tmp}/aidevops-canary.XXXXXX")
 
-	# Run without external plugins and with an explicit built-in agent. The canary
-	# validates provider/model health, not aidevops agent routing; relying on
-	# OpenCode's default_agent makes dispatch preflight fail before the smoke test
-	# can run when a clean setup has a stale or subagent-only default (GH#22250).
-	# OAuth auth remains available via the isolated auth.json copied below.
+	# GH#23598: OAuth-only Anthropic canaries must exercise the same plugin
+	# auth path as workers. Keep isolated XDG state for GH#22250, but do not
+	# use `--pure`; load the aidevops plugin and suppress interactive hooks via
+	# AIDEVOPS_HEADLESS=1 below.
 	local canary_model="$requested_model"
 	if [[ -z "$canary_model" ]]; then
 		while IFS= read -r canary_model; do
@@ -1551,10 +1678,22 @@ _run_canary_test() {
 	# Config isolation for canary: avoid validating the user's global
 	# default_agent before the smoke prompt runs. A stale or subagent-only
 	# default agent should not block provider/model health checks (GH#22250).
+	#
+	# GH#23598: include the opencode-aidevops plugin when present so OAuth
+	# auth is transformed correctly. Static-key hosts without the plugin keep
+	# the previous bare-config behaviour.
 	local _canary_config_dir=""
 	_canary_config_dir=$(mktemp -d "${TMPDIR:-/tmp}/aidevops-canary-config.XXXXXX")
 	mkdir -p "${_canary_config_dir}/opencode"
-	printf '%s\n' "{\"\$schema\":\"https://opencode.ai/config.json\"}" >"${_canary_config_dir}/opencode/opencode.json"
+	local _canary_plugin_path
+	_canary_plugin_path="${AIDEVOPS_PLUGIN_INDEX:-${HOME}/.aidevops/agents/plugins/opencode-aidevops/index.mjs}"
+	local _canary_plugin_url=""
+	if [[ -f "$_canary_plugin_path" ]]; then
+		_canary_plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).absolute().as_uri())' "$_canary_plugin_path" 2>/dev/null || printf 'file://%s' "$_canary_plugin_path")
+	fi
+	jq -n --arg plugin_url "$_canary_plugin_url" \
+		'{"$schema":"https://opencode.ai/config.json"} + (if $plugin_url == "" then {} else {plugin: [$plugin_url]} end)' \
+		>"${_canary_config_dir}/opencode/opencode.json"
 	local _canary_provider
 	local _canary_default_provider="anthropic"
 	_canary_provider=$(extract_provider "$canary_model" 2>/dev/null || printf '%s' "$_canary_default_provider")
@@ -1603,9 +1742,16 @@ _run_canary_test() {
 	# t2887: use _effective_opencode_bin (resolved above), not
 	# $OPENCODE_BIN_DEFAULT directly. Identical to the default in the
 	# happy path; differs only when alternative-path fallback fired.
+	#
+	# GH#23598/GH#23950: AIDEVOPS_HEADLESS=1 prevents plugin greeting/TTSR
+	# injection, while the benign arithmetic probe avoids prompt-injection-shaped
+	# canary tokens. Pin OpenCode's vanilla build agent so hosts with a global
+	# default_agent such as Build+ cannot load interactive greeting mandates into
+	# this runtime/model health check.
 	XDG_CONFIG_HOME="$_canary_config_dir" XDG_DATA_HOME="$_canary_data_dir" \
+		AIDEVOPS_HEADLESS=1 \
 		run_without_opencode_session_env "${_canary_timeout_cmd[@]}" \
-		"$_effective_opencode_bin" run --pure "Reply with exactly: CANARY_OK" \
+		"$_effective_opencode_bin" run "What is two plus two? Answer with the single word: Four" \
 		-m "$canary_model" --dir "${HOME}" --agent build \
 		${canary_attach_args[@]+"${canary_attach_args[@]}"} \
 		>"$canary_output" 2>&1 || canary_exit=$?
@@ -1614,16 +1760,19 @@ _run_canary_test() {
 	rm -rf "$_canary_data_dir" 2>/dev/null || true
 	rm -rf "$_canary_config_dir" 2>/dev/null || true
 
-	# Output-aware check: the model responding "CANARY_OK" is the real
-	# success signal. The exit code reflects process lifecycle (opencode
+	# Output-aware check: the model responding with the expected word is the
+	# real success signal. The exit code reflects process lifecycle (opencode
 	# cleanup time, signal handling) not model health. Previously this
-	# required exit=0 AND CANARY_OK, but opencode 1.4.x takes longer to
-	# shut down cleanly — the timeout mechanism kills it (exit=124/SIGTERM
-	# or 137/SIGKILL on Linux; exit=142/SIGALRM on perl-alarm fallback)
-	# even after the model has already responded. Checking output alone is
-	# safe because CANARY_OK can only appear if the model actually
+	# required exit=0 AND the expected token, but opencode 1.4.x takes longer
+	# to shut down cleanly — the timeout mechanism kills it (exit=124/SIGTERM
+	# or 137/SIGKILL on Linux; exit=142/SIGALRM on perl-alarm fallback) even
+	# after the model has already responded. Checking output alone is safe
+	# because the expected token can only appear if the model actually
 	# processed the prompt and generated a response.
-	if grep -q "CANARY_OK" "$canary_output" 2>/dev/null; then
+	#
+	# GH#23598: match the benign probe answer case-insensitively with the
+	# portable whole-word mode supported by GNU and BSD grep.
+	if grep -qwi 'four' "$canary_output"; then
 		# Cache the pass timestamp
 		mkdir -p "${STATE_DIR}" 2>/dev/null || true
 		date +%s >"$cache_file"

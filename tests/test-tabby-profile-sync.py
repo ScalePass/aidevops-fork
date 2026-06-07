@@ -260,5 +260,97 @@ class TestGetReposExcludesWorktrees(unittest.TestCase):
         self.assertNotIn(str(wt), paths)
 
 
+class TestRepairBrokenOpenCodeLaunchProfiles(unittest.TestCase):
+    """Regression coverage for Tabby OpenCode repair edge cases."""
+
+    def test_generated_profile_quotes_opencode_command_arg(self):
+        profile = tabby_profile_sync.build_profile_yaml(
+            name="repo",
+            cwd="/Users/alice/repo",
+            tab_colour="#DA5CD3",
+            scheme={
+                "name": "test",
+                "foreground": "#ffffff",
+                "background": "#000000",
+                "cursor": "#ffffff",
+                "colors": ["#000000"],
+            },
+            group_id="group-1",
+        )
+
+        self.assertIn("        - 'opencode; exec zsh'", profile)
+        self.assertNotIn("        - opencode; exec zsh", profile)
+
+    def test_command_field_with_trailing_comment_is_repaired(self):
+        repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(
+            """profiles:
+  - name: repo
+    options:
+      command: /bin/zsh -l -c 'opencode; exec zsh' # legacy Tabby shape
+      args: []
+"""
+        )
+
+        self.assertEqual(repairs, 1)
+        self.assertIn("      command: /bin/zsh", repaired)
+        self.assertIn("        - 'opencode; exec zsh'", repaired)
+
+    def test_inline_args_blank_line_before_env_does_not_duplicate_env(self):
+        repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(
+            """profiles:
+  - name: repo
+    options:
+      command: /bin/zsh -l -c 'opencode; exec zsh'
+      args: []
+
+      env: {}
+"""
+        )
+
+        self.assertEqual(repairs, 1)
+        self.assertEqual(repaired.count("      env:"), 1)
+        self.assertIn("        - 'opencode; exec zsh'", repaired)
+
+    def test_block_args_comment_before_env_does_not_duplicate_env(self):
+        repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(
+            """profiles:
+  - name: repo
+    options:
+      command: /bin/zsh -l -c 'opencode; exec zsh'
+      args:
+        - '-l'
+        - '-c'
+        - 'opencode; exec zsh'
+      # keep existing env block
+      env: {}
+"""
+        )
+
+        self.assertEqual(repairs, 1)
+        self.assertEqual(repaired.count("      env:"), 1)
+        self.assertIn("      # keep existing env block", repaired)
+
+    def test_last_opencode_profile_does_not_swallow_top_level_sections(self):
+        original = """profiles:
+  - name: repo
+    options:
+      command: /bin/zsh -l -c 'opencode; exec zsh'
+      args: []
+terminal:
+  searchOptions:
+    # opencode in a top-level section must not make it profile repair input
+    regex: opencode
+"""
+
+        repaired, repairs = tabby_profile_sync.repair_broken_opencode_launch_profiles(
+            original
+        )
+
+        self.assertEqual(repairs, 1)
+        self.assertIn("terminal:\n", repaired)
+        self.assertIn("    regex: opencode", repaired)
+        self.assertTrue(repaired.endswith("    regex: opencode\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

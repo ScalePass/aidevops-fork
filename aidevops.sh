@@ -5,7 +5,7 @@
 # AI DevOps Framework CLI
 # Usage: aidevops <command> [options]
 #
-# Version: 3.15.25
+# Version: 3.20.28
 
 set -euo pipefail
 
@@ -831,6 +831,7 @@ _help_commands() {
 	echo "  upgrade            Alias for update"
 	echo "  pulse <cmd>        Session-based pulse control (start/stop/status)"
 	echo "  launch-worker      Manually launch headless workers for GitHub issues"
+	echo "  worktree <cmd>     Manage safe linked worktrees (add/list/remove/status/switch/clean) (alias: wt)"
 	echo "  auto-update <cmd>  Manage automatic update polling (enable/disable/status)"
 	echo "  repo-sync <cmd>    Daily git pull for repos in parent dirs (enable/disable/status/dirs)"
 	echo "  update-tools       Check for outdated tools (--update to auto-update)"
@@ -838,10 +839,11 @@ _help_commands() {
 	echo "  cleanup <cmd>      Cleanup helpers (remote branch audit/delete)"
 	echo "  model-accounts-pool OAuth account pool (list/check/diagnose/add/rotate/reset-cooldowns)"
 	echo "  client-format      Client request format alignment (extract/check/canary/monitor)"
-	echo "  opencode-db <cmd>  OpenCode SQLite maintenance (check/report/maintain/window/status/install)"
+	echo "  opencode-db <cmd>  OpenCode SQLite maintenance/session lookup (check/report/sessions/maintain/window/status/install)"
+	echo "  opencode [args]    Launch OpenCode with aidevops per-session DB isolation"
 	echo "  opencode-sandbox   Test OpenCode versions in isolation (install/run/check/clean)"
 	echo "  approve <cmd>      Cryptographic issue/PR approval (setup/issue/pr/verify/status)"
-	echo "  circuit-breaker    Supervisor circuit breaker (status/reset/check/trip) — alias: cb"
+	echo "  circuit-breaker    Supervisor circuit breaker (status/reset/check/trip) (alias: cb)"
 	echo "  issue <cmd>        Interactive issue ownership (claim/release/status/scan-stale)"
 	echo "  security [cmd]     Full security assessment (posture + hygiene + supply chain)"
 	echo "  contributions      External contributions inbox (bare: status | seed/scan/stop/restart/install/uninstall)"
@@ -873,6 +875,7 @@ _help_detailed_sections() {
 	echo "  aidevops security scan-pth   # Python .pth file audit (supply chain IoC)"
 	echo "  aidevops security scan-secrets # Plaintext credential locations"
 	echo "  aidevops security scan-deps  # Unpinned dependency check"
+	echo "  aidevops security supply-chain scan [path] # npm supply-chain IOC scan"
 	echo "  aidevops security check      # Per-repo security posture assessment"
 	echo "  aidevops security dismiss <id> # Dismiss a security advisory"
 	echo ""
@@ -1325,9 +1328,18 @@ _cmd_security() {
 		_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" status || true
 		echo ""
 		_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" scan || true
+		echo ""
+		_dispatch_helper "supply-chain-advisory-helper.sh" "supply-chain-advisory-helper.sh" scan || true
 		;;
-	scan | scan-secrets | scan-pth | scan-deps | dismiss)
+	scan | scan-secrets | scan-pth | scan-deps)
 		_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" "$@"
+		;;
+	dismiss)
+		if [[ "${2:-}" == "tanstack-minishaihulud-2026-05" ]]; then
+			_dispatch_helper "supply-chain-advisory-helper.sh" "supply-chain-advisory-helper.sh" dismiss
+		else
+			_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" "$@"
+		fi
 		;;
 	hygiene)
 		shift
@@ -1342,6 +1354,12 @@ _cmd_security() {
 		_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" status || true
 		echo ""
 		_dispatch_helper "secret-hygiene-helper.sh" "secret-hygiene-helper.sh" startup-check || true
+		echo ""
+		_dispatch_helper "supply-chain-advisory-helper.sh" "supply-chain-advisory-helper.sh" startup-check || true
+		;;
+	supply-chain)
+		shift || true
+		_dispatch_helper "supply-chain-advisory-helper.sh" "supply-chain-advisory-helper.sh" "${@:-scan}"
 		;;
 	*)
 		_dispatch_helper "security-posture-helper.sh" "security-posture-helper.sh" "$@"
@@ -1593,6 +1611,7 @@ main() {
 	client-format) _cmd_client_format "$@" ;;
 	github-app-auth | github-app | gh-auth) _dispatch_helper "github-app-auth-helper.sh" "github-app-auth-helper.sh" "$@" ;;
 	opencode-db | oc-db) _dispatch_helper "opencode-db-maintenance-helper.sh" "opencode-db-maintenance-helper.sh" "$@" ;;
+	opencode | oc) _dispatch_helper "opencode-launcher-helper.sh" "opencode-launcher-helper.sh" "$@" ;;
 	opencode-sandbox | oc-sandbox) _dispatch_helper "opencode-sandbox-helper.sh" "opencode-sandbox-helper.sh" "$@" ;;
 	review-gate | review_gate) _dispatch_helper "review-gate-config-helper.sh" "review-gate-config-helper.sh" "$@" ;;
 	secret | secrets) _dispatch_helper "secret-helper.sh" "secret-helper.sh" "$@" ;;
@@ -1603,6 +1622,7 @@ main() {
 		[[ $# -eq 0 ]] && set -- status
 		_dispatch_helper "circuit-breaker-helper.sh" "circuit-breaker-helper.sh" "$@"
 		;;
+	worktree | wt) _dispatch_helper "worktree-helper.sh" "worktree-helper.sh" "$@" ;;
 	issue) _dispatch_helper "interactive-session-helper.sh" "interactive-session-helper.sh" "$@" ;;
 	signing) _dispatch_helper "signing-setup.sh" "signing-setup.sh" "$@" ;;
 	contributions | contrib)

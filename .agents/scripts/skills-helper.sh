@@ -90,6 +90,26 @@ _push_temp_file_cleanup() {
 	return 0
 }
 
+_read_count_file_and_remove() {
+	local count_path="$1"
+	local precomputed="${2:-}"
+	local found=""
+
+	if [[ -n "$precomputed" ]]; then
+		found="$precomputed"
+		if [[ -n "$count_path" && -f "$count_path" ]]; then
+			rm -f "$count_path"
+		fi
+	elif [[ -f "$count_path" ]]; then
+		found=$(<"$count_path")
+		rm -f "$count_path"
+	fi
+
+	[[ "$found" =~ ^[0-9]+$ ]] || found=0
+	printf '%s\n' "$found"
+	return 0
+}
+
 _is_search_stopword() {
 	local word="$1"
 
@@ -780,7 +800,7 @@ cmd_search() {
 		local scan_result
 		scan_result=$(_search_local_skills "$query_lower" "$json_output")
 		local found results_json
-		found="${scan_result%%	*}"
+		found=$(_read_count_file_and_remove "" "${scan_result%%	*}")
 		results_json="${scan_result#*	}"
 		echo "{\"query\":\"${query//\"/\\\"}\",\"count\":$found,\"results\":[$results_json]}"
 	else
@@ -789,9 +809,7 @@ cmd_search() {
 		_push_temp_file_cleanup "$count_file"
 		echo ""
 		_search_local_skills "$query_lower" "$json_output" "$count_file" "50"
-		found=$(<"$count_file")
-		rm -f "$count_file"
-		[[ "$found" =~ ^[0-9]+$ ]] || found=0
+		found=$(_read_count_file_and_remove "$count_file")
 		if [[ "$found" -eq 0 ]]; then
 			log_warning "No local skills found matching '$query'"
 			echo ""
@@ -834,9 +852,7 @@ cmd_browse() {
 	count_file=$(mktemp)
 	_push_temp_file_cleanup "$count_file"
 	_list_skills_in_category "$category" "$count_file"
-	found=$(<"$count_file")
-	rm -f "$count_file"
-	[[ "$found" =~ ^[0-9]+$ ]] || found=0
+	found=$(_read_count_file_and_remove "$count_file")
 
 	echo ""
 	if [[ "$found" -eq 0 ]]; then
@@ -1173,9 +1189,7 @@ cmd_recommend() {
 		count_file=$(mktemp)
 		_push_temp_file_cleanup "$count_file"
 		_list_skills_in_category "$cat" "$count_file" "12"
-		found_in_cat=$(<"$count_file")
-		rm -f "$count_file"
-		[[ "$found_in_cat" =~ ^[0-9]+$ ]] || found_in_cat=0
+		found_in_cat=$(_read_count_file_and_remove "$count_file")
 		total_found=$((total_found + found_in_cat))
 
 		if [[ "$found_in_cat" -eq 0 ]]; then

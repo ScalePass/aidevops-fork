@@ -12,11 +12,11 @@ Read subagents on-demand when trigger words clearly match. Full index: `subagent
 | Legal | legal, compliance, privacy policy, terms, contract, GDPR | `legal.md`, `tools/legal/legal-research.md` |
 | Code quality | lint, review, smells, standards, simplify, audit | `tools/code-review/code-standards.md` |
 | Git/PRs/Releases | git, PR, branch, merge, release, changelog, version | `workflows/git-workflow.md`, `tools/git/github-cli.md`, `workflows/release.md` |
-| Documents/PDF | PDF, document, report, pandoc, forms, extraction | `tools/document/document-creation.md`, `tools/pdf/overview.md`, `tools/conversion/pandoc.md` |
+| Reports/Documents/PDF | PDF, document, report, reporting, report agent, client audit, scorecard, board pack, styled report, report components, evidence badges, source ledger, report preview, A4, US Letter, slides, pandoc, forms, extraction | `reports.md`, `reports/general.md`, `reports/exporters.md`, `reports/routine-handoff.md`, `reports/outputs.md`, `scripts/commands/report-render.md`, `tools/document/document-creation.md`, `tools/pdf/overview.md`, `tools/conversion/pandoc.md` |
 | OCR | OCR, receipt scan, invoice scan, image text, PaddleOCR | `tools/ocr/overview.md`, `tools/ocr/paddleocr.md`, `tools/ocr/glm-ocr.md` |
 | Product (shared) | product, onboarding, monetisation, growth, analytics, UX | `product/validation.md`, `product/onboarding.md`, `product/monetisation.md`, `product/growth.md`, `product/ui-design.md`, `product/analytics.md` |
 | Browser/Mobile | browser, Playwright, screenshot, mobile, app, extension, Swift, SwiftUI, Xcode, iOS, macOS | `tools/browser/browser-automation.md`, `tools/browser/browser-qa.md`, `tools/browser/browser-use.md`, `tools/browser/chromium-debug-use.md`, `tools/browser/skyvern.md`, `tools/mobile/app-dev.md`, `tools/mobile/app-dev-swift.md`, `tools/mobile/swift-xcode-agent-workflow.md`, `tools/mobile/app-store-connect.md`, `tools/browser/extension-dev.md` |
-| Content/Video/Voice | blog, article, video, script, social, newsletter, voice | `content.md`, `tools/video/video-prompt-design.md`, `tools/voice/speech-to-speech.md`, `tools/voice/transcription.md` |
+| Content/Video/Voice | blog, article, video, script, social, X/Twitter, xurl, newsletter, voice | `content.md`, `content/social-xurl.md`, `tools/video/video-prompt-design.md`, `tools/voice/speech-to-speech.md`, `tools/voice/transcription.md` |
 | Design | UI, UX, brand, visual, inspiration, design system | `tools/design/ui-ux-inspiration.md`, `tools/design/ui-ux-catalogue.toon`, `tools/design/brand-identity.md` |
 | SEO | SEO, ranking, keyword, schema, GSC, sitemap, backlinks | `seo/dataforseo.md`, `seo/google-search-console.md` |
 | Paid Ads/CRO | ads, Meta Ads, CRO, landing page, copy, funnel | `marketing-sales/meta-ads.md`, `marketing-sales/ad-creative.md`, `marketing-sales/direct-response-copy.md`, `marketing-sales/cro.md` |
@@ -32,7 +32,9 @@ Read subagents on-demand when trigger words clearly match. Full index: `subagent
 | Vector Search | vector, embeddings, RAG, semantic search, zvec | `tools/database/vector-search.md`, `tools/database/vector-search/zvec.md` |
 | Local Development | localhost, local dev, Traefik, mkcert, preview proxy | `services/hosting/local-hosting.md` |
 | Hosting/Deployment | deploy, hosting, Fly, Coolify, Vercel, Daytona, cloud | `tools/deployment/hosting-comparison.md`, `tools/deployment/fly-io.md`, `tools/deployment/coolify.md`, `tools/deployment/vercel.md`, `tools/deployment/uncloud.md`, `tools/deployment/daytona.md` |
+| Networking/VPN | VPN, mesh, NetBird, Tailscale, Nostr VPN, FIPS, remote compute network | `services/networking/netbird.md`, `services/networking/tailscale.md`, `services/networking/nostr-vpn.md` |
 | Infrastructure | GPU, containers, OrbStack, remote dispatch, servers | `tools/infrastructure/cloud-gpu.md`, `tools/containers/orbstack.md`, `tools/containers/remote-dispatch.md` |
+| Networking/VPN | VPN, mesh, WireGuard, Tailscale, NetBird, Obscura, MPR, multi-party relay, Mullvad, QUIC obfuscation | `services/networking/tailscale.md`, `services/networking/netbird.md`, `services/networking/obscuravpn.md` |
 | Accessibility | accessibility, WCAG, a11y, contrast, screen reader | `tools/accessibility/accessibility-audit.md` |
 | OpenAPI exploration | OpenAPI, API spec, endpoint search, schema discovery | `tools/context/openapi-search.md` |
 | Local models | local model, llama.cpp, GGUF, Hugging Face, offline | `tools/local-models/local-models.md`, `tools/local-models/huggingface.md`, `scripts/local-model-helper.sh` |
@@ -45,5 +47,9 @@ Read subagents on-demand when trigger words clearly match. Full index: `subagent
 | Agent/MCP dev | build agent, create agent, MCP server, mcporter, plugin | `tools/build-agent/build-agent.md`, `tools/build-mcp/build-mcp.md`, `tools/mcp-toolkit/mcporter.md` |
 | Self-Improvement | self-improve, learning, autoagent, framework issue, pattern | `reference/self-improvement.md`, `tools/autoagent/autoagent.md`, `scripts/commands/autoagent.md` |
 | Framework | aidevops, setup, architecture, skills, framework docs | `aidevops/architecture.md`, `scripts/commands/skills.md` |
+
+**Creating reports**: When a user asks to create a report, client audit, evidence-led PDF, board pack, scorecard, or report preview, read `reports/general.md` first, then the matching domain report doc and `reports/exporters.md`. Keep `report.md` or `report.json` canonical; use `/report-render` only for derived HTML/PDF output.
+
+**Creating report agents**: When a report will repeat, read `reports/routine-handoff.md` and `tools/build-agent/build-agent.md`. Deterministic collection belongs in `run:` steps; `agent:Reports` owns evidence interpretation, narrative, recommendations, and handoff tasks.
 
 **Creating agents**: When a user asks to create, build, or design an agent — regardless of which primary agent is active — always read `tools/build-agent/build-agent.md` first. It contains the tier prompt (draft/custom/shared), design checklist, and lifecycle rules.

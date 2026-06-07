@@ -53,12 +53,16 @@
 #  26. gh_pr_list routes directly to REST when GraphQL remaining is low
 #  27. gh_pr_list keeps --search on the GraphQL path when budget is low
 #  28. gh_pr_view routes directly to REST when GraphQL remaining is low
-#  29. AIDEVOPS_GH_FORCE_REST_READS routes supported reads through REST without
+#  29. gh_pr_view maps merged REST PR fields to gh GraphQL-compatible JSON
+#  30. AIDEVOPS_GH_FORCE_REST_READS routes supported reads through REST without
 #      a rate-limit probe
-#  30. gh_pr_list does NOT fall back for --search because REST pulls cannot
+#  31. gh_pr_list does NOT fall back for --search because REST pulls cannot
 #      preserve search semantics
-#  31. AIDEVOPS_GH_REST_FIRST_READS routes REST-equivalent reads without a
+#  32. AIDEVOPS_GH_REST_FIRST_READS routes REST-equivalent reads without a
 #      rate-limit probe while leaving GraphQL-only PR list fields on GraphQL
+#  33. AIDEVOPS_GH_PR_VIEW_CACHE coalesces duplicate REST PR view reads
+#  34. AIDEVOPS_GH_PR_VIEW_CACHE coalesces duplicate GraphQL-only PR view reads
+#  35. _rest_split_csv suppresses Broken pipe noise when consumers close early
 #
 # Stub strategy: define `gh` as a shell function. Shell functions take
 # precedence over PATH binaries, so the stub captures all `gh` invocations
@@ -71,6 +75,13 @@ set -uo pipefail
 # routing globally, but this test enables it only in the dedicated scenarios.
 unset AIDEVOPS_GH_REST_FIRST_READS
 unset AIDEVOPS_GH_FORCE_REST_READS
+unset AIDEVOPS_GH_PR_VIEW_CACHE
+unset AIDEVOPS_GH_PR_VIEW_CACHE_DIR
+unset AIDEVOPS_GH_PR_VIEW_CACHE_TTL
+unset AIDEVOPS_GH_PR_VIEW_CACHE_DISABLE
+unset AIDEVOPS_GH_PR_LIST_CACHE_DIR
+unset AIDEVOPS_GH_PR_LIST_CACHE_TTL
+unset AIDEVOPS_GH_PR_LIST_CACHE_DISABLE
 
 SCRIPT_DIR_TEST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 SCRIPTS_DIR="$(cd "${SCRIPT_DIR_TEST}/.." && pwd)" || exit 1
@@ -169,6 +180,19 @@ gh() {
 	# gh api user - always returns testuser (for _gh_wrapper_auto_assignee)
 	if [[ "$1" == "api" && "$2" == "user" ]]; then
 		printf '"testuser"\n'
+		return 0
+	fi
+	if [[ "$1" == "api" && "$2" == "-i" && "${3:-}" =~ ^/repos/[^/]+/[^/]+/collaborators/[^/]+/permission$ ]]; then
+		local status="${STUB_COLLAB_STATUS:-200}"
+		if [[ "${STUB_COLLAB_FAIL:-0}" == "1" ]]; then
+			printf 'HTTP/2.0 %s Forbidden\n\n{"message":"Forbidden"}\n' "$status"
+			return 1
+		fi
+		if [[ "$status" == "404" ]]; then
+			printf 'HTTP/2.0 404 Not Found\n\n{"message":"Not Found"}\n'
+			return 1
+		fi
+		printf 'HTTP/2.0 %s OK\n\n{"permission":"%s"}\n' "$status" "${STUB_COLLAB_PERMISSION:-write}"
 		return 0
 	fi
 
@@ -848,6 +872,29 @@ else
 fi
 
 # =============================================================================
+# Test 23c: gh_pr_list REST fallback translates --state merged to closed+merged_at
+# =============================================================================
+: >"$GH_CALLS"
+: >"$GH_INFO_OUTPUT"
+export STUB_RATE_LIMIT_REMAINING=0
+export STUB_PR_LIST_FIXTURE='[{"number":22337,"state":"open","merged_at":null,"html_url":"https://github.com/owner/repo/pull/22337","head":{"ref":"open-branch"},"base":{"ref":"main"}},{"number":22338,"state":"closed","merged_at":null,"html_url":"https://github.com/owner/repo/pull/22338","head":{"ref":"closed-branch"},"base":{"ref":"main"}},{"number":22339,"state":"closed","merged_at":"2026-05-20T00:00:00Z","html_url":"https://github.com/owner/repo/pull/22339","head":{"ref":"merged-branch"},"base":{"ref":"main"}}]'
+
+merged_prs=$(gh_pr_list --repo "owner/repo" --state merged --json number,state,mergedAt,headRefName --jq '.' 2>/dev/null || true)
+merged_count=$(printf '%s\n' "$merged_prs" | jq 'length' 2>/dev/null || printf '0')
+merged_number=$(printf '%s\n' "$merged_prs" | jq -r '.[0].number // empty' 2>/dev/null || true)
+merged_state=$(printf '%s\n' "$merged_prs" | jq -r '.[0].state // empty' 2>/dev/null || true)
+
+if [[ "$merged_count" == "1" && "$merged_number" == "22339" && "$merged_state" == "MERGED" ]] &&
+	grep -qE '^api /repos/owner/repo/pulls\?state=closed&per_page=30' "$GH_CALLS" 2>/dev/null &&
+	! grep -qE 'state=merged' "$GH_CALLS" 2>/dev/null; then
+	pass "gh_pr_list REST fallback maps --state merged to closed PRs filtered by merged_at"
+else
+	fail "gh_pr_list REST fallback maps --state merged to closed PRs filtered by merged_at" \
+		"output=${merged_prs} GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
+fi
+unset STUB_PR_LIST_FIXTURE
+
+# =============================================================================
 # Test 23c: gh_issue_list REST fallback preserves gh-shaped JSON output
 # =============================================================================
 : >"$GH_CALLS"
@@ -902,6 +949,31 @@ else
 fi
 
 # =============================================================================
+# Test 25a: gh_pr_view maps merged REST fields to gh-compatible JSON
+# =============================================================================
+: >"$GH_CALLS"
+: >"$GH_INFO_OUTPUT"
+export STUB_RATE_LIMIT_REMAINING=0
+export STUB_PR_VIEW_FIXTURE='{"number":5777,"state":"closed","merged":true,"merged_at":"2026-05-28T01:26:52Z","closed_at":"2026-05-28T01:26:52Z","merge_commit_sha":"7b5aff4a61e0df594cdee103fa651e0d1d52c3fd","merged_by":{"login":"maintainer"}}'
+
+pr_view_merged=$(gh_pr_view 5777 --repo "owner/repo" \
+	--json state,closedAt,mergedAt,mergeCommit,merged,mergedBy --jq '.' 2>/dev/null || true)
+pr_view_state=$(printf '%s\n' "$pr_view_merged" | jq -r '.state // empty' 2>/dev/null || true)
+pr_view_closed_at=$(printf '%s\n' "$pr_view_merged" | jq -r '.closedAt // empty' 2>/dev/null || true)
+pr_view_merged_at=$(printf '%s\n' "$pr_view_merged" | jq -r '.mergedAt // empty' 2>/dev/null || true)
+pr_view_merge_oid=$(printf '%s\n' "$pr_view_merged" | jq -r '.mergeCommit.oid // empty' 2>/dev/null || true)
+pr_view_merged_bool=$(printf '%s\n' "$pr_view_merged" | jq -r '.merged // empty' 2>/dev/null || true)
+pr_view_merged_by=$(printf '%s\n' "$pr_view_merged" | jq -r '.mergedBy.login // empty' 2>/dev/null || true)
+
+if [[ "$pr_view_state" == "MERGED" && "$pr_view_closed_at" == "2026-05-28T01:26:52Z" && "$pr_view_merged_at" == "2026-05-28T01:26:52Z" && "$pr_view_merge_oid" == "7b5aff4a61e0df594cdee103fa651e0d1d52c3fd" && "$pr_view_merged_bool" == "true" && "$pr_view_merged_by" == "maintainer" ]]; then
+	pass "gh_pr_view REST fallback maps merged fields to gh-compatible JSON"
+else
+	fail "gh_pr_view REST fallback maps merged fields to gh-compatible JSON" \
+		"output=${pr_view_merged} GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_PR_VIEW_FIXTURE
+
+# =============================================================================
 # Test 25b: REST PR view normalizes REST boolean mergeable to gh GraphQL enum
 # =============================================================================
 : >"$GH_CALLS"
@@ -936,6 +1008,31 @@ else
 		"output=${pr_view_mergeable} GH_CALLS=$(cat "$GH_CALLS")"
 fi
 unset STUB_PR_VIEW_FIXTURE
+
+# =============================================================================
+# Test 25e: PR view cache coalesces duplicate REST reads for the same repo#PR
+# =============================================================================
+: >"$GH_CALLS"
+: >"$GH_INFO_OUTPUT"
+export STUB_RATE_LIMIT_REMAINING=0
+export STUB_PR_VIEW_FIXTURE='{"number":123,"title":"cached title","mergeable":true}'
+export AIDEVOPS_GH_PR_VIEW_CACHE=1
+export AIDEVOPS_GH_PR_VIEW_CACHE_DIR="${TMP}/pr_view_cache"
+rm -rf "$AIDEVOPS_GH_PR_VIEW_CACHE_DIR"
+
+pr_view_cached_title=$(gh_pr_view 123 --repo "owner/repo" --json title --jq '.title' 2>/dev/null || true)
+pr_view_cached_mergeable=$(gh_pr_view 123 --repo "owner/repo" --json mergeable --jq '.mergeable' 2>/dev/null || true)
+pr_view_rest_calls=$(grep -cE '^api /repos/owner/repo/pulls/123$' "$GH_CALLS" 2>/dev/null || true)
+
+if [[ "$pr_view_cached_title" == "cached title" && "$pr_view_cached_mergeable" == "MERGEABLE" && "$pr_view_rest_calls" == "1" ]]; then
+	pass "gh_pr_view cache coalesces duplicate REST reads for same repo#PR"
+else
+	fail "gh_pr_view cache coalesces duplicate REST reads for same repo#PR" \
+		"title=${pr_view_cached_title} mergeable=${pr_view_cached_mergeable} rest_calls=${pr_view_rest_calls} GH_CALLS=$(cat "$GH_CALLS")"
+fi
+unset STUB_PR_VIEW_FIXTURE
+unset AIDEVOPS_GH_PR_VIEW_CACHE
+unset AIDEVOPS_GH_PR_VIEW_CACHE_DIR
 
 # =============================================================================
 # Test 25c: REST PR list normalizes REST boolean mergeable to gh GraphQL enum
@@ -1042,6 +1139,23 @@ else
 fi
 unset AIDEVOPS_GH_PR_LIST_CACHE_DIR AIDEVOPS_GH_PR_LIST_CACHE_TTL
 
+: >"$GH_CALLS"
+: >"$GH_INFO_OUTPUT"
+export AIDEVOPS_GH_PR_VIEW_CACHE=1
+export AIDEVOPS_GH_PR_VIEW_CACHE_DIR="$TMP/pr-view-cache"
+export AIDEVOPS_GH_PR_VIEW_CACHE_TTL=30
+gh_pr_view 123 --repo "owner/repo" --json statusCheckRollup --jq '.number // 0' >/dev/null 2>&1 || true
+gh_pr_view 123 --repo "owner/repo" --json statusCheckRollup --jq '.number // 0' >/dev/null 2>&1 || true
+
+pr_view_calls=$(grep -cE '^pr view 123 --repo owner/repo --json statusCheckRollup' "$GH_CALLS" 2>/dev/null || true)
+if [[ "$pr_view_calls" == "1" ]]; then
+	pass "gh_pr_view exact-output cache coalesces identical GraphQL-only PR reads"
+else
+	fail "gh_pr_view exact-output cache coalesces identical GraphQL-only PR reads" \
+		"pr_view_calls=${pr_view_calls} GH_CALLS=$(cat "$GH_CALLS") | INFO=$(cat "$GH_INFO_OUTPUT")"
+fi
+unset AIDEVOPS_GH_PR_VIEW_CACHE AIDEVOPS_GH_PR_VIEW_CACHE_DIR AIDEVOPS_GH_PR_VIEW_CACHE_TTL
+
 unset AIDEVOPS_GH_REST_FIRST_READS
 
 # =============================================================================
@@ -1090,7 +1204,83 @@ else
 		"GH_CALLS=$(cat "$GH_CALLS") | TOKENS=$(cat "$GH_APP_TOKEN_CALLS")"
 fi
 
+: >"$GH_CALLS"
+: >"$GH_APP_TOKEN_CALLS"
+export STUB_COLLAB_PERMISSION=write
+collab_perm=""
+_gh_collaborator_permission_lookup "owner/repo" "testuser" collab_perm 2>/dev/null || true
+if [[ "$collab_perm" == "write" ]] &&
+	grep -qE '^api -i /repos/owner/repo/collaborators/testuser/permission' "$GH_CALLS" 2>/dev/null &&
+	grep -q 'cached-app-token' "$GH_APP_TOKEN_CALLS" 2>/dev/null; then
+	pass "collaborator permission lookup uses GitHub App REST route when available"
+else
+	fail "collaborator permission lookup uses GitHub App REST route when available" \
+		"perm=${collab_perm} GH_CALLS=$(cat "$GH_CALLS") | TOKENS=$(cat "$GH_APP_TOKEN_CALLS")"
+fi
+
 unset AIDEVOPS_GITHUB_APP_ENABLED AIDEVOPS_GITHUB_APP_ID AIDEVOPS_GITHUB_APP_INSTALLATION_ID AIDEVOPS_GITHUB_APP_REST_FIRST
+
+: >"$GH_CALLS"
+: >"$GH_APP_TOKEN_CALLS"
+collab_perm=""
+_gh_collaborator_permission_lookup "owner/repo" "testuser" collab_perm 2>/dev/null || true
+if [[ "$collab_perm" == "write" ]] &&
+	grep -qE '^api -i /repos/owner/repo/collaborators/testuser/permission' "$GH_CALLS" 2>/dev/null &&
+	! grep -q 'cached-app-token' "$GH_APP_TOKEN_CALLS" 2>/dev/null; then
+	pass "collaborator permission lookup falls back to normal gh auth when App auth is unavailable"
+else
+	fail "collaborator permission lookup falls back to normal gh auth when App auth is unavailable" \
+		"perm=${collab_perm} GH_CALLS=$(cat "$GH_CALLS") | TOKENS=$(cat "$GH_APP_TOKEN_CALLS")"
+fi
+
+export STUB_COLLAB_STATUS=404
+collab_perm=""
+_gh_collaborator_permission_lookup "owner/repo" "outsider" collab_perm 2>/dev/null || true
+if [[ "$collab_perm" == "none" && "${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-}" == "404" ]]; then
+	pass "collaborator permission lookup maps 404 to confirmed none"
+else
+	fail "collaborator permission lookup maps 404 to confirmed none" \
+		"perm=${collab_perm} http=${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-unset} reason=${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-unset}"
+fi
+
+export STUB_COLLAB_STATUS=403
+export STUB_COLLAB_FAIL=1
+if ! _gh_collaborator_permission_lookup "owner/repo" "testuser" >/dev/null 2>&1 &&
+	[[ "${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-}" == "403" && "${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-}" == "api-failure" ]]; then
+	pass "collaborator permission lookup keeps API failure distinct from none"
+else
+	fail "collaborator permission lookup keeps API failure distinct from none" \
+		"http=${AIDEVOPS_GH_COLLAB_PERMISSION_HTTP:-unset} reason=${AIDEVOPS_GH_COLLAB_PERMISSION_REASON:-unset}"
+fi
+unset STUB_COLLAB_STATUS STUB_COLLAB_FAIL STUB_COLLAB_PERMISSION
+
+# =============================================================================
+# Test 35: _rest_split_csv suppresses early-close Broken pipe noise
+# =============================================================================
+long_csv=""
+for i in $(seq 1 5000); do
+	if [[ -z "$long_csv" ]]; then
+		long_csv="token-${i}"
+	else
+		long_csv="${long_csv},token-${i}"
+	fi
+done
+
+early_close_output=""
+early_close_stderr=$({
+	early_close_output=$(_rest_split_csv "$long_csv" | {
+		IFS= read -r first_token || true
+		printf '%s\n' "$first_token"
+	})
+	printf '%s\n' "$early_close_output" >"$TMP/early-close-output.log"
+} 2>&1)
+
+if [[ "$(cat "$TMP/early-close-output.log")" == "token-1" && "$early_close_stderr" != *"Broken pipe"* ]]; then
+	pass "_rest_split_csv suppresses Broken pipe noise when consumers close early"
+else
+	fail "_rest_split_csv suppresses Broken pipe noise when consumers close early" \
+		"stdout=$(cat "$TMP/early-close-output.log") stderr=${early_close_stderr}"
+fi
 
 # =============================================================================
 # Summary

@@ -22,6 +22,12 @@ Log an issue with the aidevops framework to GitHub.
 
 All issues from non-collaborators are gated behind `needs-maintainer-review` — a maintainer must approve before the pipeline picks them up. This command produces higher-quality reports than the web form because it gathers diagnostics, checks duplicates, and validates before submission.
 
+When the created issue leads to a follow-up PR, reference that issue in the PR
+body with an accepted keyword: `For #NNN` or `Ref #NNN` for parent/non-closing
+work, and `Resolves #NNN`, `Fixes #NNN`, or `Closes #NNN` for leaf fixes. The
+repository `linked-issue-check` blocks PRs that mention an issue without one of
+these keywords.
+
 ## Before Composing
 
 **Enumerate every manual workaround you applied in the current session.** Each is a candidate fix for a systemic problem:
@@ -166,7 +172,7 @@ If the proposal doesn't survive these questions, discuss before filing — it ma
 
 For framework bugs, use this expanded template that includes Evidence Attribution and Reproducer sections:
 
-```markdown
+````markdown
 ## Description
 
 {problem}
@@ -214,7 +220,7 @@ For framework bugs, use this expanded template that includes Evidence Attributio
 ## Additional Context
 
 {errors, session context}
-```
+````
 
 For non-bug reports (enhancements, questions), use the shorter template without Reproducer and Workarounds sections:
 
@@ -270,13 +276,23 @@ documented in GH#20322. Do not skip it even if Step 3 returned no results.
 
 ### Step 6: Create the Issue
 
+First Bash tool call: create and sign an absolute body file.
+
+```bash
+BODY_FILE=/tmp/aidevops-issue-body.md
+cat <<'EOF' > "$BODY_FILE"
+BODY_CONTENT
+EOF
+~/.aidevops/agents/scripts/gh-signature-helper.sh footer >> "$BODY_FILE"
+```
+
+Second Bash tool call: post the already-created file. Do not combine body-file
+creation and the `gh issue create` write in the same Bash tool call.
+
 ```bash
 gh issue create -R marcusquinn/aidevops \
   --title "TITLE" \
-  --body "$(cat <<'EOF'
-BODY_CONTENT
-EOF
-)" \
+  --body-file /tmp/aidevops-issue-body.md \
   --label "LABEL"
 ```
 

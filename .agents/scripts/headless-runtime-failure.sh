@@ -38,6 +38,10 @@ if [[ -r "${_HRFF_SCRIPT_DIR}/gh-signature-helper-detect.sh" ]]; then
 	# shellcheck source=gh-signature-helper-detect.sh
 	source "${_HRFF_SCRIPT_DIR}/gh-signature-helper-detect.sh"
 fi
+if [[ -r "${_HRFF_SCRIPT_DIR}/shared-repo-state-guard.sh" ]]; then
+	# shellcheck source=shared-repo-state-guard.sh
+	source "${_HRFF_SCRIPT_DIR}/shared-repo-state-guard.sh"
+fi
 unset _HRFF_SCRIPT_DIR
 : "${AIDEVOPS_UNKNOWN_VERSION:=unknown}"
 
@@ -239,6 +243,28 @@ _hrff_handle_rate_limit_release_circuit() {
 }
 
 #######################################
+# Return success when a GitHub issue unlock failure is benign.
+#
+# GitHub treats unlocking an already-unlocked issue as a failed mutation in some
+# gh/API paths. Release cleanup calls unlock defensively after active-state
+# cleanup, so that already-clean state should not produce pulse warnings.
+#
+# Args:
+#   $1 = gh failure output
+#######################################
+_hrff_unlock_failure_is_benign() {
+	local unlock_output="$1"
+
+	if [[ "$unlock_output" =~ [Aa]lready[[:space:]-]+unlocked ]] || \
+		[[ "$unlock_output" =~ [Nn]ot[[:space:]-]+locked ]] || \
+		[[ "$unlock_output" =~ [Cc]onversation[[:space:]]+is[[:space:]]+not[[:space:]]+locked ]] || \
+		[[ "$unlock_output" =~ [Ii]ssue[[:space:]]+is[[:space:]]+not[[:space:]]+locked ]]; then
+		return 0
+	fi
+	return 1
+}
+
+#######################################
 # Unlock the issue once a worker releases its dispatch claim.
 #
 # Worker dispatch locks the issue before launch. Release paths already clear
@@ -253,11 +279,41 @@ _hrff_handle_rate_limit_release_circuit() {
 _unlock_issue_after_dispatch_release() {
 	local issue_number="$1"
 	local repo_slug="$2"
+	local unlock_output=""
 
 	[[ -n "$issue_number" && -n "$repo_slug" ]] || return 0
-	gh issue unlock "$issue_number" --repo "$repo_slug" >/dev/null 2>&1 || {
-		print_warning "Failed to unlock released issue #${issue_number} (non-fatal)"
+	if [[ "$issue_number" =~ ^0[0-9]+$ ]]; then
+		print_info "Skipping release unlock for local task ID ${issue_number} in ${repo_slug}: not a GitHub issue number"
+		return 0
+	fi
+
+	unlock_output=$(gh issue unlock "$issue_number" --repo "$repo_slug" 2>&1) || {
+		if _hrff_unlock_failure_is_benign "$unlock_output"; then
+			print_info "Release unlock skipped for GitHub issue #${issue_number} in ${repo_slug}: already unlocked"
+			return 0
+		fi
+		print_warning "Failed to unlock released GitHub issue #${issue_number} in ${repo_slug} (non-fatal): ${unlock_output:-unknown error}"
 	}
+	return 0
+}
+
+#######################################
+# Check whether dispatch release may mutate issue state for a repo.
+#
+# Args:
+#   $1 = issue_number
+#   $2 = repo_slug
+#######################################
+_hrff_release_repo_state_is_managed() {
+	local issue_number="$1"
+	local repo_slug="$2"
+
+	if declare -F aidevops_can_manage_repo_issue_state >/dev/null 2>&1; then
+		if ! aidevops_can_manage_repo_issue_state "$repo_slug"; then
+			print_info "Skipping CLAIM_RELEASED for #${issue_number} in ${repo_slug}: repo state is not managed by this account"
+			return 1
+		fi
+	fi
 	return 0
 }
 
@@ -292,10 +348,19 @@ _release_dispatch_claim() {
 	# Try to get repo slug from the dispatch ledger or env
 	repo_slug="${DISPATCH_REPO_SLUG:-}"
 
+	# Supervisor/pulse cleanup paths can source this module and run the generic
+	# EXIT cleanup without ever having claimed a worker issue. With no issue and
+	# no repo there is no real claim to release; treat that exact empty-context
+	# case as a benign caller-boundary no-op. Keep warning on partial context
+	# because issue-without-repo or repo-without-issue can strand a real claim.
+	if [[ -z "$issue_number" && -z "$repo_slug" ]]; then
+		return 0
+	fi
 	if [[ -z "$issue_number" || -z "$repo_slug" ]]; then
 		print_warning "Cannot release claim: missing issue=$issue_number repo=$repo_slug"
 		return 0
 	fi
+	_hrff_release_repo_state_is_managed "$issue_number" "$repo_slug" || return 0
 
 	if [[ "$reason" == "rate_limit_transient" ]]; then
 		if ! _hrff_handle_rate_limit_release_circuit "$issue_number" "$repo_slug"; then
@@ -303,7 +368,7 @@ _release_dispatch_claim() {
 			# GitHub issue is not stranded in an active lifecycle state, but skip
 			# the duplicate CLAIM_RELEASED audit comment that caused storms.
 			local _rl_runner_name=""
-			_rl_runner_name=$(whoami)
+			_rl_runner_name=$(_hrff_resolve_release_runner_login)
 			if declare -F clear_active_status_on_release >/dev/null 2>&1; then
 				clear_active_status_on_release "$issue_number" "$repo_slug" "$_rl_runner_name" \
 					|| print_warning "Failed to clear active status on #${issue_number} (non-fatal)"
@@ -323,7 +388,7 @@ _release_dispatch_claim() {
 	fi
 
 	local runner_name=""
-	runner_name=$(whoami)
+	runner_name=$(_hrff_resolve_release_runner_login)
 	local release_ts=""
 	release_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 	local machine_readable_part="CLAIM_RELEASED reason=${reason} runner=${runner_name} ts=${release_ts} aidevops_version=${aidevops_version} opencode_version=${opencode_version}"
@@ -358,6 +423,35 @@ ${machine_readable_part}
 			|| print_warning "Failed to clear active status on #${issue_number} (non-fatal)"
 	fi
 	_unlock_issue_after_dispatch_release "$issue_number" "$repo_slug"
+	return 0
+}
+
+#######################################
+# Resolve the GitHub login whose dispatch claim should be released.
+# Prefer the identity captured by the dispatcher because the local OS user can
+# differ from the GitHub assignee in bot/cross-account worker setups (GH#23854).
+# Globals:
+#   WORKER_GITHUB_LOGIN, AIDEVOPS_WORKER_GITHUB_LOGIN
+# Outputs:
+#   GitHub login or OS username fallback.
+#######################################
+_hrff_resolve_release_runner_login() {
+	local runner_login="${WORKER_GITHUB_LOGIN:-${AIDEVOPS_WORKER_GITHUB_LOGIN:-}}"
+	if [[ -n "$runner_login" ]]; then
+		printf '%s\n' "$runner_login"
+		return 0
+	fi
+
+	if command -v gh >/dev/null 2>&1; then
+		runner_login=$(gh api user --jq '.login // ""' || true)
+		if [[ "$runner_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+			printf '%s\n' "$runner_login"
+			return 0
+		fi
+	fi
+
+	runner_login=$(whoami)
+	printf '%s\n' "$runner_login"
 	return 0
 }
 

@@ -58,6 +58,7 @@ teardown_test_env() {
 init_git_worktree() {
 	local worktree_dir="$1"
 	git -C "$worktree_dir" init -q
+	git -C "$worktree_dir" remote add origin "https://github.com/owner/repo.git"
 	git -C "$worktree_dir" -c user.name="aidevops-test" -c user.email="aidevops-test@example.invalid" \
 		commit --allow-empty -q -m "initial"
 	git -C "$worktree_dir" update-ref refs/remotes/origin/main HEAD
@@ -76,6 +77,8 @@ test_appends_escalation_contract() {
 		[[ "$output" == *'do bounded discovery instead of stopping'* ]] &&
 		[[ "$output" == *'Exit BLOCKED with reason "missing implementation context" only after bounded discovery'* ]] &&
 		[[ "$output" == *'Worktree edit verification (GH#22816)'* ]] &&
+		[[ "$output" == *'Incremental WIP commits (GH#23677)'* ]] &&
+		[[ "$output" == *'A first WIP commit makes the worktree cleanup-visible as active real work even before a PR exists'* ]] &&
 		[[ "$output" == *'Progressive context loading'* ]] &&
 		[[ "$output" == *'Load only referenced workflow/reference docs'* ]] &&
 		[[ "$output" == *'Stop reading once target files, reference pattern, constraints, and verification are clear.'* ]] &&
@@ -100,6 +103,28 @@ test_non_full_loop_prompt_unchanged() {
 	fi
 
 	print_result "leaves non-full-loop prompt unchanged" 1 "Prompt was unexpectedly modified"
+	return 0
+}
+
+test_headless_contract_uses_deployed_framework_paths() {
+	local AIDEVOPS_HEADLESS_APPEND_CONTRACT
+	AIDEVOPS_HEADLESS_APPEND_CONTRACT=1
+	local prompt
+	prompt='/full-loop Implement issue #24354'
+	local output
+	output=$(append_worker_headless_contract "$prompt")
+
+	if [[ "$output" == *'Normal project repos: full-loop workflow is deployed at ~/.aidevops/agents/scripts/commands/full-loop.md'* ]] &&
+		[[ "$output" == *'Normal project repos: aidevops framework scripts live under ~/.aidevops/agents/scripts/ (not project-local .agents/scripts/)'* ]] &&
+		[[ "$output" == *'Aidevops source repo only: the same files are edited at .agents/scripts/commands/full-loop.md and under .agents/scripts/'* ]] &&
+		[[ "$output" != *'- Full-loop workflow: .agents/scripts/commands/full-loop.md'* ]] &&
+		[[ "$output" != *'- All agent scripts live under .agents/scripts/ (not scripts/ at root)'* ]]; then
+		print_result "headless contract uses deployed framework paths for project repos" 0
+		return 0
+	fi
+
+	print_result "headless contract uses deployed framework paths for project repos" 1 \
+		"Output still contains ambiguous source-repo framework path guidance"
 	return 0
 }
 
@@ -240,6 +265,7 @@ test_issue_worker_env_contract_rejects_missing_env() {
 
 test_issue_worker_env_contract_rejects_missing_worktree() {
 	export WORKER_ISSUE_NUMBER="22438"
+	export WORKER_REPO_SLUG="owner/repo"
 	unset WORKER_WORKTREE_PATH 2>/dev/null || true
 	local output=""
 	local status=0
@@ -249,32 +275,34 @@ test_issue_worker_env_contract_rejects_missing_worktree() {
 
 	if [[ "$status" -ne 0 && "$output" == *"WORKER_WORKTREE_PATH unset"* ]]; then
 		print_result "issue worker env contract rejects missing WORKER_WORKTREE_PATH" 0
-		unset WORKER_ISSUE_NUMBER 2>/dev/null || true
+		unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG 2>/dev/null || true
 		return 0
 	fi
 
 	print_result "issue worker env contract rejects missing WORKER_WORKTREE_PATH" 1 \
 		"status=$status output=${output:-<empty>}"
-	unset WORKER_ISSUE_NUMBER 2>/dev/null || true
+	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG 2>/dev/null || true
 	return 0
 }
 
 test_issue_worker_env_contract_accepts_valid_precreated_worktree() {
 	local worktree_dir="${TEST_ROOT}/precreated-worktree"
 	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
 	export WORKER_ISSUE_NUMBER="22438"
+	export WORKER_REPO_SLUG="owner/repo"
 	export WORKER_WORKTREE_PATH="$worktree_dir"
 
 	if _validate_issue_worker_env_contract \
 		"worker" "issue-22438" "$worktree_dir" "Issue #22438: env contract" \
 		"/full-loop Implement issue #22438"; then
 		print_result "issue worker env contract accepts valid precreated worktree" 0
-		unset WORKER_ISSUE_NUMBER WORKER_WORKTREE_PATH 2>/dev/null || true
+		unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH 2>/dev/null || true
 		return 0
 	fi
 
 	print_result "issue worker env contract accepts valid precreated worktree" 1
-	unset WORKER_ISSUE_NUMBER WORKER_WORKTREE_PATH 2>/dev/null || true
+	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH 2>/dev/null || true
 	return 0
 }
 
@@ -534,6 +562,46 @@ test_cmd_run_aborts_issue_worker_before_canary_when_env_missing() {
 	return 0
 }
 
+test_cmd_run_preserves_worker_origin_overrides_before_canary() {
+	local worktree_dir="${TEST_ROOT}/origin-override-worktree"
+	mkdir -p "$worktree_dir"
+	init_git_worktree "$worktree_dir"
+	export WORKER_ISSUE_NUMBER=23558
+	export WORKER_REPO_SLUG="owner/repo"
+	export WORKER_WORKTREE_PATH="$worktree_dir"
+	export AIDEVOPS_SESSION_ORIGIN=interactive
+	export AIDEVOPS_HEADLESS=already-set
+
+	choose_model() { printf '%s' 'openai/gpt-5.5'; return 0; }
+	_enforce_opencode_version_pin() { return 0; }
+	_run_canary_test() {
+		if [[ "${AIDEVOPS_SESSION_ORIGIN:-}" == "interactive" && "${AIDEVOPS_HEADLESS:-}" == "already-set" ]]; then
+			printf '%s\n' 'canary_saw_origin_overrides'
+		fi
+		return 1
+	}
+
+	local output=""
+	local status=0
+	output=$(cmd_run \
+		--role worker \
+		--session-key issue-23558 \
+		--dir "$worktree_dir" \
+		--title "Issue #23558: origin overrides" \
+		--prompt "/full-loop Implement issue #23558" 2>&1) || status=$?
+
+	unset WORKER_ISSUE_NUMBER WORKER_REPO_SLUG WORKER_WORKTREE_PATH AIDEVOPS_SESSION_ORIGIN AIDEVOPS_HEADLESS 2>/dev/null || true
+	unset -f choose_model _enforce_opencode_version_pin _run_canary_test 2>/dev/null || true
+	if [[ "$status" -eq 1 && "$output" == *"canary_saw_origin_overrides"* && "$output" == *"Canary failed"* ]]; then
+		print_result "cmd_run preserves worker origin env overrides before canary" 0
+		return 0
+	fi
+
+	print_result "cmd_run preserves worker origin env overrides before canary" 1 \
+		"status=$status output=${output:-<empty>}"
+	return 0
+}
+
 test_deleted_launch_cwd_recovers_to_work_dir() {
 	local stale_dir="${TEST_ROOT}/stale-cwd"
 	local worktree_dir="${TEST_ROOT}/worker-worktree"
@@ -592,6 +660,53 @@ EOF
 	print_result "extract_session_id_from_output returns latest session id" 1 "Expected ses_latest, got ${session_id:-<empty>}"
 	return 0
 }
+
+test_provider_sessions_scope_issue_keys_by_repo_slug() {
+	local provider="openai"
+	local model="openai/gpt-5.5"
+	export WORKER_REPO_SLUG="owner/one"
+	store_session_id "$provider" "issue-47" "ses_one" "$model"
+	export WORKER_REPO_SLUG="owner/two"
+	store_session_id "$provider" "issue-47" "ses_two" "$model"
+
+	local first_session="" second_session="" unscoped_count=""
+	export WORKER_REPO_SLUG="owner/one"
+	first_session=$(get_session_id "$provider" "issue-47")
+	export WORKER_REPO_SLUG="owner/two"
+	second_session=$(get_session_id "$provider" "issue-47")
+	unscoped_count=$(db_query "SELECT count(*) FROM provider_sessions WHERE provider = 'openai' AND session_key = 'issue-47';")
+	unset WORKER_REPO_SLUG
+
+	if [[ "$first_session" == "ses_one" && "$second_session" == "ses_two" && "$unscoped_count" == "0" ]]; then
+		print_result "provider_sessions scope issue keys by repo slug" 0
+		return 0
+	fi
+
+	print_result "provider_sessions scope issue keys by repo slug" 1 \
+		"first=${first_session:-<empty>} second=${second_session:-<empty>} unscoped_count=${unscoped_count:-<empty>}"
+	return 0
+}
+
+test_provider_sessions_keep_pulse_unscoped() {
+	local provider="openai"
+	local model="openai/gpt-5.5"
+	export WORKER_REPO_SLUG="owner/one"
+	store_session_id "$provider" "pulse" "ses_pulse" "$model"
+	local pulse_session="" pulse_count=""
+	pulse_session=$(get_session_id "$provider" "pulse")
+	pulse_count=$(db_query "SELECT count(*) FROM provider_sessions WHERE provider = 'openai' AND session_key = 'pulse';")
+	unset WORKER_REPO_SLUG
+
+	if [[ "$pulse_session" == "ses_pulse" && "$pulse_count" == "1" ]]; then
+		print_result "provider_sessions keep pulse sessions unscoped" 0
+		return 0
+	fi
+
+	print_result "provider_sessions keep pulse sessions unscoped" 1 \
+		"pulse=${pulse_session:-<empty>} count=${pulse_count:-<empty>}"
+	return 0
+}
+
 test_blocked_completion_records_blocked_label() {
 	local output_file="${TEST_ROOT}/blocked-output.jsonl"
 	printf '%s\n' '{"type":"text","sessionID":"ses_blocked","text":"BLOCKED: missing dependency credentials"}' >"$output_file"
@@ -716,12 +831,48 @@ test_service_interruption_candidate_uses_separate_path() {
 	return 0
 }
 
-test_canary_uses_builtin_agent_without_default_agent() {
+test_service_interruption_exhausted_metric_preserves_context() {
+	local captured_file="${TEST_ROOT}/service-interruption-exhausted.args"
+	append_runtime_metric() {
+		printf '%s\n' "$@" >"$captured_file"
+		return 0
+	}
+	local WORKER_ISSUE_NUMBER="24099"
+	local DISPATCH_REPO_SLUG="owner/repo"
+	local _run_provider_error_type=""
+	local _run_provider_status=""
+	local _run_runtime_error_type=""
+	local _run_classification_source="default_local"
+	local _run_classification_pattern="default_local"
+	local _metric_kill_reason="unknown"
+
+	_append_service_interruption_exhausted_metric \
+		"worker" "issue-24099" "openai/gpt-5.5" \
+		"${TEST_ROOT}/worktree" "local_error" \
+		"${TEST_ROOT}/excerpt.log" "ses_context"
+
+	local captured
+	captured=$(<"$captured_file")
+	if [[ "$captured" == *$'service_interruption_exhausted\n81\nlocal_error\n1\n0\n24099\nowner/repo\n'* ]] && \
+		[[ "$captured" == *$'excerpt.log\nses_context\n'* ]] && \
+		[[ "$captured" == *$'mid_session_interruption\nunknown\nresume_existing_session'* ]]; then
+		print_result "service interruption exhausted metric preserves diagnostics context" 0
+	else
+		print_result "service interruption exhausted metric preserves diagnostics context" 1 "$captured"
+	fi
+	unset -f append_runtime_metric 2>/dev/null || true
+	return 0
+}
+
+test_canary_pins_vanilla_agent_with_isolated_plugin_config() {
 	local canary_root="${TEST_ROOT}/canary-agent"
 	local fake_bin_dir="${canary_root}/bin"
+	local plugin_dir="${canary_root}/plugin path"
+	local plugin_path="${plugin_dir}/index.mjs"
 	local args_file="${canary_root}/args.txt"
 	local env_file="${canary_root}/env.txt"
-	mkdir -p "$fake_bin_dir"
+	mkdir -p "$fake_bin_dir" "$plugin_dir"
+	printf '%s\n' 'export default {};' >"$plugin_path"
 
 	cat >"${fake_bin_dir}/opencode" <<'EOF'
 #!/usr/bin/env bash
@@ -734,9 +885,12 @@ if [[ -n "${OPENCODE_SESSION_ID:-}${OPENCODE_PID:-}${OPENCODE_RUN_ID:-}${OPENCOD
 	exit 42
 fi
 printf '%s\n' "$*" >"$AIDEVOPS_CANARY_ARGS_FILE"
-printf 'OPENCODE_BIN=%s\nOPENCODE_DB=%s\n' \
-	"${OPENCODE_BIN:-}" "${OPENCODE_DB:-}" >"$AIDEVOPS_CANARY_ENV_FILE"
-printf 'CANARY_OK\n'
+printf 'OPENCODE_BIN=%s\nOPENCODE_DB=%s\nAIDEVOPS_HEADLESS=%s\n' \
+	"${OPENCODE_BIN:-}" "${OPENCODE_DB:-}" "${AIDEVOPS_HEADLESS:-}" >"$AIDEVOPS_CANARY_ENV_FILE"
+if [[ -f "${XDG_CONFIG_HOME:-}/opencode/opencode.json" ]]; then
+	printf 'CONFIG=%s\n' "$(<"${XDG_CONFIG_HOME}/opencode/opencode.json")" >>"$AIDEVOPS_CANARY_ENV_FILE"
+fi
+printf 'The answer is Four.\n'
 exit 0
 EOF
 	chmod +x "${fake_bin_dir}/opencode"
@@ -753,6 +907,7 @@ EOF
 		OPENCODE_PROCESS_ROLE="tui" \
 		OPENCODE="1" \
 		OPENCODE_SERVER_PASSWORD="session-password" \
+		AIDEVOPS_PLUGIN_INDEX="$plugin_path" \
 		AIDEVOPS_CANARY_ARGS_FILE="$args_file" \
 		AIDEVOPS_CANARY_ENV_FILE="$env_file" \
 		AIDEVOPS_HEADLESS_RUNTIME_DIR="${canary_root}/runtime" \
@@ -764,18 +919,22 @@ EOF
 		args=$(<"$args_file")
 		local env_output
 		env_output=$(<"$env_file")
-		if [[ "$args" == *'--pure'* && "$args" == *'--agent build'* ]] &&
+		local expected_plugin_url
+		expected_plugin_url=$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).absolute().as_uri())' "$plugin_path")
+		if [[ "$args" == *'What is two plus two?'* && "$args" != *'--pure'* && "$args" == *'--agent build'* ]] &&
 			[[ "$env_output" == *"OPENCODE_BIN=${fake_bin_dir}/opencode"* ]] &&
-			[[ "$env_output" == *"OPENCODE_DB=${canary_root}/opencode.db"* ]]; then
-			print_result "canary uses built-in agent without default_agent" 0
+			[[ "$env_output" == *"OPENCODE_DB=${canary_root}/opencode.db"* ]] &&
+			[[ "$env_output" == *"AIDEVOPS_HEADLESS=1"* ]] &&
+			[[ "$env_output" == *"$expected_plugin_url"* ]]; then
+			print_result "canary pins vanilla agent with isolated plugin config" 0
 			return 0
 		fi
-		print_result "canary uses built-in agent without default_agent" 1 \
-			"Expected --pure/--agent build and preserved OpenCode config env, got args: ${args}; env: ${env_output}"
+		print_result "canary pins vanilla agent with isolated plugin config" 1 \
+			"Expected benign prompt, no --pure, but with --agent build, headless env, plugin config, and preserved OpenCode config env; got args: ${args}; env: ${env_output}"
 		return 0
 	fi
 
-	print_result "canary uses built-in agent without default_agent" 1 \
+	print_result "canary pins vanilla agent with isolated plugin config" 1 \
 		"Canary stub did not run successfully: ${output:-<empty>}"
 	return 0
 }
@@ -819,6 +978,18 @@ test_worker_opencode_exec_paths_strip_session_env() {
 
 	print_result "worker OpenCode exec paths strip session env" 1 \
 		"Expected sandbox and bare-timeout OpenCode exec paths to use run_without_opencode_session_env"
+	return 0
+}
+
+test_worker_opencode_invocation_seeds_continuation_session() {
+	if grep -Fq "_seed_worker_db_session_context \"\$isolated_data_dir\" \"\$_invoke_persisted_session\"" "$HELPER_SCRIPT" &&
+		grep -Fq "[lifecycle] db_seeded session=\$_invoke_persisted_session" "$HELPER_SCRIPT"; then
+		print_result "worker OpenCode invocation seeds persisted continuation session" 0
+		return 0
+	fi
+
+	print_result "worker OpenCode invocation seeds persisted continuation session" 1 \
+		"Expected persisted session seeding before opencode continuation launch"
 	return 0
 }
 
@@ -883,6 +1054,129 @@ EOF
 
 	print_result "copy_scoped_opencode_auth keeps selected provider only" 1 \
 		"Expected only openai auth entry in ${dest_auth}"
+	return 0
+}
+
+test_seed_worker_db_session_context_copies_only_selected_session() {
+	local shared_dir="${HOME}/.local/share/opencode"
+	local isolated_dir="${TEST_ROOT}/isolated-opencode-data"
+	local shared_db="${shared_dir}/opencode.db"
+	local worker_db="${isolated_dir}/opencode/opencode.db"
+	mkdir -p "$shared_dir" "${isolated_dir}/opencode"
+	rm -f "$shared_db" "$worker_db"
+
+	sqlite3 "$shared_db" <<'SQL'
+CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL);
+INSERT INTO project VALUES ('project-keep', 'Keep Project');
+INSERT INTO project VALUES ('project-other', 'Other Project');
+INSERT INTO session VALUES ('session-keep', 'project-keep', 'Keep');
+INSERT INTO session VALUES ('session-other', 'project-other', 'Other');
+INSERT INTO message VALUES ('message-keep-1', 'session-keep', 'one');
+INSERT INTO message VALUES ('message-keep-2', 'session-keep', 'two');
+INSERT INTO message VALUES ('message-other', 'session-other', 'other');
+SQL
+	sqlite3 "$shared_db" .schema | sqlite3 "$worker_db"
+
+	_seed_worker_db_session_context "$isolated_dir" "session-keep"
+
+	local sessions messages other_sessions other_messages projects
+	sessions=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM session WHERE id = 'session-keep';")
+	messages=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM message WHERE session_id = 'session-keep';")
+	other_sessions=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM session WHERE id = 'session-other';")
+	other_messages=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM message WHERE session_id = 'session-other';")
+	projects=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM project WHERE id = 'project-keep';")
+
+	if [[ "$sessions" == "1" && "$messages" == "2" && "$other_sessions" == "0" && "$other_messages" == "0" && "$projects" == "1" ]]; then
+		print_result "seed worker DB copies only selected continuation session" 0
+		return 0
+	fi
+
+	print_result "seed worker DB copies only selected continuation session" 1 \
+		"sessions=$sessions messages=$messages other_sessions=$other_sessions other_messages=$other_messages projects=$projects"
+	return 0
+}
+
+test_seed_worker_db_session_context_copies_migration_metadata() {
+	local shared_dir="${HOME}/.local/share/opencode"
+	local isolated_dir="${TEST_ROOT}/isolated-opencode-metadata"
+	local shared_db="${shared_dir}/opencode.db"
+	local worker_db="${isolated_dir}/opencode/opencode.db"
+	mkdir -p "$shared_dir" "${isolated_dir}/opencode"
+	rm -f "$shared_db" "$worker_db"
+
+	sqlite3 "$shared_db" <<'SQL'
+CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY, hash TEXT NOT NULL, created_at INTEGER);
+CREATE TABLE data_migration (id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL);
+CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL);
+CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT);
+CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL);
+CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT NOT NULL);
+INSERT INTO __drizzle_migrations VALUES (1, 'schema-ready', 12345);
+INSERT INTO data_migration VALUES ('data-ready', 67890);
+INSERT INTO migration VALUES ('opencode-v16-ready', 1700000000);
+INSERT INTO project VALUES ('project-keep', 'Keep Project');
+INSERT INTO session VALUES ('session-keep', 'project-keep', 'Keep');
+INSERT INTO message VALUES ('message-keep', 'session-keep', 'one');
+SQL
+
+	_seed_worker_db_session_context "$isolated_dir" "session-keep"
+
+	local schema_migrations data_migrations migration_rows sessions messages
+	schema_migrations=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM __drizzle_migrations WHERE hash = 'schema-ready';")
+	data_migrations=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM data_migration WHERE id = 'data-ready';")
+	migration_rows=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM migration WHERE id = 'opencode-v16-ready';")
+	sessions=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM session WHERE id = 'session-keep';")
+	messages=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM message WHERE session_id = 'session-keep';")
+
+	if [[ "$schema_migrations" == "1" && "$data_migrations" == "1" && "$migration_rows" == "1" && "$sessions" == "1" && "$messages" == "1" ]]; then
+		print_result "seed worker DB copies migration metadata for continuation" 0
+		return 0
+	fi
+
+	print_result "seed worker DB copies migration metadata for continuation" 1 \
+		"schema_migrations=$schema_migrations data_migrations=$data_migrations migration_rows=$migration_rows sessions=$sessions messages=$messages"
+	return 0
+}
+
+test_sync_worker_db_migration_metadata_repairs_prewarmed_project_table() {
+	local shared_dir="${HOME}/.local/share/opencode"
+	local isolated_dir="${TEST_ROOT}/isolated-opencode-prewarm"
+	local shared_db="${shared_dir}/opencode.db"
+	local worker_db="${isolated_dir}/opencode/opencode.db"
+	mkdir -p "$shared_dir" "${isolated_dir}/opencode"
+	rm -f "$shared_db" "$worker_db"
+
+	sqlite3 "$shared_db" <<'SQL'
+CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY, hash TEXT NOT NULL, created_at INTEGER);
+CREATE TABLE data_migration (id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL);
+CREATE TABLE migration (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL);
+CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT);
+INSERT INTO __drizzle_migrations VALUES (1, 'schema-ready', 12345);
+INSERT INTO data_migration VALUES ('data-ready', 67890);
+INSERT INTO migration VALUES ('opencode-v16-ready', 1700000000);
+SQL
+	sqlite3 "$worker_db" <<'SQL'
+CREATE TABLE project (id TEXT PRIMARY KEY, name TEXT);
+INSERT INTO project VALUES ('prewarmed-project', 'Prewarmed Project');
+SQL
+
+	_sync_worker_db_migration_metadata "$isolated_dir"
+
+	local schema_migrations data_migrations migration_rows projects
+	schema_migrations=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM __drizzle_migrations WHERE hash = 'schema-ready';")
+	data_migrations=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM data_migration WHERE id = 'data-ready';")
+	migration_rows=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM migration WHERE id = 'opencode-v16-ready';")
+	projects=$(sqlite3 "$worker_db" "SELECT COUNT(*) FROM project WHERE id = 'prewarmed-project';")
+
+	if [[ "$schema_migrations" == "1" && "$data_migrations" == "1" && "$migration_rows" == "1" && "$projects" == "1" ]]; then
+		print_result "sync worker DB migration metadata repairs prewarmed project table" 0
+		return 0
+	fi
+
+	print_result "sync worker DB migration metadata repairs prewarmed project table" 1 \
+		"schema_migrations=$schema_migrations data_migrations=$data_migrations migration_rows=$migration_rows projects=$projects"
 	return 0
 }
 
@@ -1435,10 +1729,103 @@ test_cmd_run_finish_fail_recovers_branch_orphan_output() {
 	return 0
 }
 
+test_cmd_run_finish_fail_closed_issue_without_merged_pr_fails() {
+	local work_dir="${TEST_ROOT}/repo-fail-issue-closed"
+	local released_reason="" fast_fail_called=0
+	_setup_test_git_repo "$work_dir" 0
+	DISPATCH_REPO_SLUG="test-owner/test-repo"
+	gh() {
+		if [[ "${*}" == *"issue view"* ]]; then printf 'CLOSED'
+		elif [[ "${*}" == *"pr list"* ]]; then printf ''
+		fi
+		return 0
+	}
+	_release_dispatch_claim() { released_reason="$2"; return 0; }
+	_report_failure_to_fast_fail() { fast_fail_called=1; return 0; }
+	_update_dispatch_ledger() { return 0; }
+	_release_session_lock() { return 0; }
+	_increment_orphan_count_stat() { return 0; }
+
+	_cmd_run_finish "issue-99999" "fail" "$work_dir"
+
+	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh 2>/dev/null || true
+	if [[ "$released_reason" == "worker_failed" && "$fast_fail_called" -eq 1 ]]; then
+		print_result "_cmd_run_finish fail requires merged PR beyond closed issue" 0
+	else
+		print_result "_cmd_run_finish fail requires merged PR beyond closed issue" 1 \
+			"Expected worker_failed and fast-fail, got reason='${released_reason}' fast_fail=${fast_fail_called}"
+	fi
+	return 0
+}
+
+test_cmd_run_finish_fail_existing_pr_recovery_remains_complete() {
+	local work_dir="${TEST_ROOT}/repo-fail-pr-merged"
+	local released_reason="" fast_fail_called=0
+	_setup_test_git_repo "$work_dir" 1
+	DISPATCH_REPO_SLUG="test-owner/test-repo"
+	gh() {
+		if [[ "${*}" == *"issue view"* ]]; then printf 'OPEN'
+		elif [[ "${*}" == *"pr list"* && "${*}" == *"--state merged"* ]]; then printf '1'
+		else printf '0'
+		fi
+		return 0
+	}
+	_release_dispatch_claim() { released_reason="$2"; return 0; }
+	_report_failure_to_fast_fail() { fast_fail_called=1; return 0; }
+	_update_dispatch_ledger() { return 0; }
+	_release_session_lock() { return 0; }
+	_increment_orphan_count_stat() { return 0; }
+
+	_cmd_run_finish "issue-99999" "fail" "$work_dir"
+
+	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh 2>/dev/null || true
+	if [[ "$released_reason" == "worker_complete" && "$fast_fail_called" -eq 0 ]]; then
+		print_result "_cmd_run_finish fail still recovers existing PR for open issue" 0
+	else
+		print_result "_cmd_run_finish fail still recovers existing PR for open issue" 1 \
+			"Expected worker_complete and no fast-fail, got reason='${released_reason}' fast_fail=${fast_fail_called}"
+	fi
+	return 0
+}
+
+test_cmd_run_finish_fail_confirmed_terminal_state_releases_complete() {
+	local work_dir="${TEST_ROOT}/repo-fail-terminal-complete"
+	local released_reason="" fast_fail_called=0
+	_setup_test_git_repo "$work_dir" 1
+	DISPATCH_REPO_SLUG="test-owner/test-repo"
+	gh() {
+		if [[ "${*}" == *"issue view"* ]]; then printf 'CLOSED'
+		elif [[ "${*}" == *"pr list"* && "${*}" == *"--head"* && "${*}" == *"--state merged"* ]]; then printf '123'
+		elif [[ "${*}" == *"pr list"* && "${*}" == *"--search"* && "${*}" == *"--state merged"* ]]; then printf '123'
+		fi
+		return 0
+	}
+	_release_dispatch_claim() { released_reason="$2"; return 0; }
+	_report_failure_to_fast_fail() { fast_fail_called=1; return 0; }
+	_update_dispatch_ledger() { return 0; }
+	_release_session_lock() { return 0; }
+	_increment_orphan_count_stat() { return 0; }
+
+	_cmd_run_finish "issue-99999" "fail" "$work_dir"
+
+	unset DISPATCH_REPO_SLUG 2>/dev/null || true
+	unset -f gh 2>/dev/null || true
+	if [[ "$released_reason" == "worker_complete" && "$fast_fail_called" -eq 0 ]]; then
+		print_result "_cmd_run_finish fail treats confirmed terminal GitHub state as complete" 0
+	else
+		print_result "_cmd_run_finish fail treats confirmed terminal GitHub state as complete" 1 \
+			"Expected worker_complete and no fast-fail, got reason='${released_reason}' fast_fail=${fast_fail_called}"
+	fi
+	return 0
+}
+
 main() {
 	setup_test_env
 	test_appends_escalation_contract
 	test_non_full_loop_prompt_unchanged
+	test_headless_contract_uses_deployed_framework_paths
 	test_parse_initial_model_does_not_set_explicit_override
 	test_startup_no_activity_timeout_returns_watchdog_continue
 	test_sigkill_with_activity_attempts_continuation
@@ -1454,20 +1841,28 @@ main() {
 	test_worker_worktree_claim_classifies_unreclaimed_live_owner
 	test_deleted_cwd_recovery_uses_worker_worktree
 	test_cmd_run_aborts_issue_worker_before_canary_when_env_missing
+	test_cmd_run_preserves_worker_origin_overrides_before_canary
 	test_deleted_launch_cwd_recovers_to_work_dir
 	test_does_not_double_append
 	test_extract_session_id_from_output_returns_latest_session_id
+	test_provider_sessions_scope_issue_keys_by_repo_slug
+	test_provider_sessions_keep_pulse_unscoped
 	test_blocked_completion_records_blocked_label
 	test_missing_context_blocked_requests_brief_recovery
 	test_headless_activity_timeout_default_matches_watchdog
 	test_activity_watchdog_classifiers_detect_rate_limit_and_ci_wait
 	test_failure_classifier_records_provenance
 	test_service_interruption_candidate_uses_separate_path
-	test_canary_uses_builtin_agent_without_default_agent
+	test_service_interruption_exhausted_metric_preserves_context
+	test_canary_pins_vanilla_agent_with_isolated_plugin_config
 	test_opencode_session_env_wrapper_strips_session_vars_only
 	test_worker_opencode_exec_paths_strip_session_env
+	test_worker_opencode_invocation_seeds_continuation_session
 	test_sandbox_passthrough_scopes_provider_env
 	test_copy_scoped_opencode_auth_keeps_selected_provider_only
+	test_seed_worker_db_session_context_copies_only_selected_session
+	test_seed_worker_db_session_context_copies_migration_metadata
+	test_sync_worker_db_migration_metadata_repairs_prewarmed_project_table
 	test_large_opencode_prompt_uses_file_attachment
 	test_large_claude_prompt_uses_stdin_file
 	test_registered_prompt_temp_cleanup_removes_dir
@@ -1486,6 +1881,9 @@ main() {
 	test_handle_worker_branch_orphan_empty_branch_existing_pr_releases_complete
 	test_cmd_run_finish_orphan_recovery_failure_emits_branch_orphan
 	test_cmd_run_finish_fail_recovers_branch_orphan_output
+	test_cmd_run_finish_fail_closed_issue_without_merged_pr_fails
+	test_cmd_run_finish_fail_existing_pr_recovery_remains_complete
+	test_cmd_run_finish_fail_confirmed_terminal_state_releases_complete
 	teardown_test_env
 	printf '\nTests run: %d\n' "$TESTS_RUN"
 	printf 'Failures: %d\n' "$TESTS_FAILED"

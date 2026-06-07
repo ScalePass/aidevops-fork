@@ -61,6 +61,8 @@ assert_not_grep() {
 # Resolve paths relative to this test file
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$SCRIPT_DIR/pulse-dispatch-engine.sh"
+CORE="$SCRIPT_DIR/pulse-dispatch-core.sh"
+DISPATCH_LIB="$SCRIPT_DIR/pulse-dispatch-lib.sh"
 
 echo "=== t2443 + t2903: pulse-dispatch-engine stage wiring regression tests ==="
 echo "Engine: $ENGINE"
@@ -100,6 +102,15 @@ assert_grep \
 assert_grep \
 	"3b: post_merge_scanner function name present" \
 	'_run_post_merge_review_scanner' \
+	"$ENGINE"
+
+assert_grep \
+	"3c: pr_review_thread_response stage call present" \
+	'_pulse_run_optional_stage_with_timeout "pr_review_thread_response"' \
+	"$ENGINE"
+assert_grep \
+	"3d: pr_review_thread_response function name present" \
+	'_run_pr_review_thread_response_scanner' \
 	"$ENGINE"
 
 assert_grep \
@@ -149,6 +160,42 @@ assert_grep \
 	"9: async post-dispatch housekeeping uses _pflt_timeout" \
 	'_pulse_start_post_dispatch_housekeeping "\$_pflt_timeout"' \
 	"$ENGINE"
+
+# --- Benign expected dispatch blocks must not be surfaced as generic stage failures ---
+
+assert_grep \
+	"10a: dispatch stage adapter preserves benign block rc" \
+	'_dispatch_stage_rc_adapter' \
+	"$DISPATCH_LIB"
+assert_grep \
+	"10b: interactive review hold is recognized as a benign block" \
+	'dedup_active_claim \| interactive_review_hold \| pr_target_not_dispatchable' \
+	"$DISPATCH_LIB"
+assert_grep \
+	"10b2: benign blocks are logged distinctly, not as pre-launch failures" \
+	'blocked:\$\{failure_reason\} benign dispatch block' \
+	"$DISPATCH_LIB"
+assert_grep \
+	"10b3: active claim dedup returns benign rc=3 to suppress Stage failed" \
+	'_dedup_layer6_assignee_and_stale.*&& return 3' \
+	"$CORE"
+assert_grep \
+	"10b4: refill skips candidates blocked by active claim in current cycle" \
+	'skip:already_assigned blocked:' \
+	"$DISPATCH_LIB"
+
+assert_grep \
+	"10c: dispatch stage adapter reports rc-file write failures" \
+	'Failed to write dispatch rc to' \
+	"$DISPATCH_LIB"
+assert_grep \
+	"10d: dispatch stage adapter propagates raw rc after rc-file write failure" \
+	'return "\$raw_rc"' \
+	"$DISPATCH_LIB"
+assert_not_grep \
+	"10e: benign block reasons are not counted as candidate failure reasons" \
+	'dedup_active_claim \| cost_budget_exceeded' \
+	"$DISPATCH_LIB"
 
 # --- Summary ---
 

@@ -274,7 +274,10 @@ pulse_apply_provider_load_capacity_cap() {
 	[[ "$provider_5xx" =~ ^[0-9]+$ ]] || provider_5xx=0
 	[[ "$progress_heartbeats" =~ ^[0-9]+$ ]] || progress_heartbeats=0
 
-	local account_multiplier="${PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER:-2}"
+	local account_multiplier="${PULSE_PROVIDER_ACCOUNT_SLOT_MULTIPLIER:-}"
+	if [[ -z "$account_multiplier" ]] && declare -F config_get >/dev/null 2>&1; then
+		account_multiplier=$(config_get "orchestration.provider_account_slot_multiplier" "2")
+	fi
 	[[ "$account_multiplier" =~ ^[0-9]+$ ]] || account_multiplier=2
 	((account_multiplier < 1)) && account_multiplier=1
 	local account_cap=-1
@@ -366,7 +369,7 @@ count_runnable_candidates() {
 		# (separate budget pool, ~15x smaller payload).
 		local pr_json pr_rc_err
 		pr_rc_err=$(mktemp)
-		pr_json=$(gh_pr_list --repo "$slug" --state open --json number,reviewDecision,headRefOid --limit "$PULSE_RUNNABLE_PR_LIMIT" 2>"$pr_rc_err") || pr_json="[]"
+		pr_json=$(pulse_pr_list_get --repo "$slug" --state open --json number,reviewDecision,headRefOid --limit "$PULSE_RUNNABLE_PR_LIMIT" 2>"$pr_rc_err") || pr_json="[]"
 		if [[ -z "$pr_json" || "$pr_json" == "null" ]]; then
 			local _pr_rc_err_msg
 			_pr_rc_err_msg=$(cat "$pr_rc_err" 2>/dev/null || echo "unknown error")

@@ -236,8 +236,10 @@ parse_cron_to_oncalendar() {
 	local cal_min="00"
 	[[ "$minute" != "*" ]] && cal_min=$(printf '%02d' "$minute")
 
-	printf '%s *-%s-%s %s:%s:00' "$cal_dow" "$cal_month" "$cal_day" "$cal_hour" "$cal_min"
-	return 0
+	local prefix=""
+	[[ "$cal_dow" != "*" ]] && prefix="${cal_dow} "
+	printf '%s*-%s-%s %s:%s:00' "$prefix" "$cal_month" "$cal_day" "$cal_hour" "$cal_min"
+	return $?
 }
 
 parse_common_args() {

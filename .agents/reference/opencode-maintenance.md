@@ -137,31 +137,35 @@ FORCE_VACUUM_SIZE_MB=0 VACUUM_FREELIST_THRESHOLD=0.0 \
 
 `opencode-db-archive.sh archive` supports two retention targets:
 
-- **Age-based retention** (`--retention-days N`) archives sessions older than
-  `N` days. This remains the default mode (`14` days) and is best when session
-  volume is predictable.
+- **Age-based retention** (`--retention-days N`) archives sessions whose last
+  update/activity is older than `N` days. This remains the default mode (`14`
+  days) and is best when session volume is predictable. A resumed or updated
+  session stays active even when its original creation time is older than the
+  cutoff.
 - **Count-based retention** (`--keep-sessions N`) keeps the newest `N` active
-  sessions and archives older sessions beyond that budget. Use this when TUI
-  startup cost tracks active session count more closely than calendar age, for
-  example keeping roughly the newest 500 sessions active.
+  sessions by last update/activity, with creation time and session ID as stable
+  tie-breakers, and archives older sessions beyond that budget. Use this when
+  TUI startup cost tracks active session count more closely than calendar age,
+  for example keeping roughly the 500 most recently active sessions in the
+  active database.
 
 Examples:
 
 ```bash
-# Keep roughly the newest 500 active sessions, archive older sessions
+# Keep roughly the 500 most recently active sessions, archive older sessions
 opencode-db-archive.sh archive --keep-sessions 500
 
 # Preview a stricter active-session budget first
 opencode-db-archive.sh archive --keep-sessions 250 --dry-run
 
-# Conservative combined mode: archive only sessions older than 30 days AND
-# outside the newest 500 sessions
+# Conservative combined mode: archive only sessions inactive for 30 days AND
+# outside the 500 most recently updated sessions
 opencode-db-archive.sh archive --retention-days 30 --keep-sessions 500
 ```
 
 When both modes are provided, the archive uses the conservative intersection:
-recent sessions are preserved if they are within either the age window or the
-newest-session budget.
+recently updated sessions are preserved if they are within either the last-update
+age window or the most-recently-updated session budget.
 
 ## Disruptive maintenance window
 
@@ -212,9 +216,32 @@ OPENCODE_DB_MAINTENANCE_HOUR=8 \
 - `~/.aidevops/.agent-workspace/work/opencode-maintenance/maintenance.log`
   — append-only history
 
+## Hidden session lookup — child, archive, and project ID drift
+
+**Symptom:** The TUI `/sessions` picker or `opencode session list` does not show a session that should still exist. Closing and reopening opencode does not help.
+
+**First checks:**
+
+```bash
+opencode session list --format json -n 50
+aidevops opencode-db sessions --query "issue-or-title-text" --include-archive
+aidevops opencode-db sessions --directory "/absolute/path/to/repo" --include-archive --limit 50
+```
+
+The aidevops lookup is read-only. It searches the active OpenCode DB and, with `--include-archive`, `opencode-archive.db`. Use `--id ses_...` for an exact session ID and `--json` for scriptable output.
+
+**Interpretation:**
+
+- `active-top-level`: active DB row with no `parent_id`; normal top-level session lists should usually be able to show it.
+- `active-child`: active DB row with `parent_id` set. Child/subagent sessions can be hidden from top-level OpenCode list UX even though they are still present and recoverable from SQLite metadata.
+- `archived`: row is in `opencode-archive.db`. The OpenCode TUI/CLI does not read the archive DB.
+- `possible-project-id-mismatch`: the same directory has multiple `project_id` values, so the current picker may be filtering out older rows.
+
+Do not manually mutate SQLite during diagnosis. Restore/remap operations should use a dedicated safe workflow with the OpenCode TUI closed and a DB backup.
+
 ## Project ID drift — /sessions loses history
 
-**Symptom:** The TUI `/sessions` picker shows only the current session (or a handful of recent ones), not the full history. Closing and reopening opencode does not help.
+**Symptom:** The TUI `/sessions` picker shows only the current session (or a handful of recent ones), not the full history. Closing and reopening opencode does not help. Prefer the read-only `aidevops opencode-db sessions --directory "/absolute/path/to/repo" --include-archive` lookup before writing manual SQL.
 
 **Cause:** Opencode identifies git-tracked projects by a **git commit SHA** stored in `session.project_id`. The `/sessions` picker filters by the *current* session's `project_id`. When opencode regenerates this SHA (binary update, rebase, or certain git reference events), prior sessions orphan onto the old `project_id` and disappear from the picker. They are NOT deleted.
 

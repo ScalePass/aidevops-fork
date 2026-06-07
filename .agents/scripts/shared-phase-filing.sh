@@ -722,6 +722,58 @@ _Sequential phase auto-filing by \`shared-phase-filing.sh\` (t2740)._"
 }
 
 #######################################
+# Read parent issue metadata and ensure it is still open before it can drive
+# next-phase auto-filing.
+#
+# Args: $1=parent_issue, $2=repo_slug
+# Globals: _PHASE_PARENT_BODY, _PHASE_PARENT_TITLE
+# Returns: 0 always
+#######################################
+_read_open_phase_parent_fields() {
+	local parent_issue="$1"
+	local repo_slug="$2"
+	local parent_api
+	local parent_state parent_labels _parent_json _parent_fields
+	local _parent_state_b64 _parent_labels_b64 _parent_title_b64 _parent_body_b64
+	printf -v parent_api 'repos/%s/issues/%s' "$repo_slug" "$parent_issue"
+
+	_PHASE_PARENT_BODY=""
+	_PHASE_PARENT_TITLE=""
+	_parent_json=$(gh api "$parent_api" \
+		--jq '{body: (.body // ""), title: (.title // ""), state: (.state // ""), labels: [(.labels // [])[].name]}' 2>/dev/null) || _parent_json=""
+	[[ -n "$_parent_json" ]] || return 0
+
+	_parent_fields=$(printf '%s' "$_parent_json" | jq -r '[
+		("x" + ((.state // "") | @base64)),
+		("x" + (([(.labels // [])[] | if type == "object" then .name else . end] | join(",")) | @base64)),
+		("x" + ((.title // "") | @base64)),
+		("x" + ((.body // "") | @base64))
+	] | @tsv') || _parent_fields=""
+	[[ -n "$_parent_fields" ]] || return 0
+	IFS=$'\t' read -r _parent_state_b64 _parent_labels_b64 _parent_title_b64 _parent_body_b64 <<<"$_parent_fields"
+	parent_state=$(printf '%s' "${_parent_state_b64#x}" | base64 -d 2>/dev/null) || parent_state=""
+	parent_labels=$(printf '%s' "${_parent_labels_b64#x}" | base64 -d 2>/dev/null) || parent_labels=""
+	_PHASE_PARENT_TITLE=$(printf '%s' "${_parent_title_b64#x}" | base64 -d 2>/dev/null) || _PHASE_PARENT_TITLE=""
+	_PHASE_PARENT_BODY=$(printf '%s' "${_parent_body_b64#x}" | base64 -d 2>/dev/null) || _PHASE_PARENT_BODY=""
+	if [[ "$parent_state" != "open" ]]; then
+		_phase_log "Parent #${parent_issue}: state is '${parent_state}', not open — skip auto-file"
+		_PHASE_PARENT_BODY=""
+		_PHASE_PARENT_TITLE=""
+		return 0
+	fi
+	case ",${parent_labels}," in
+	*,no-auto-dispatch,*)
+		_phase_log "Parent #${parent_issue}: carries no-auto-dispatch, skip auto-file"
+		_PHASE_PARENT_BODY=""
+		_PHASE_PARENT_TITLE=""
+		return 0
+		;;
+	esac
+
+	return 0
+}
+
+#######################################
 # Main entry point: auto-file the next phase for a parent-task issue
 # after a child phase PR merges.
 #
@@ -732,8 +784,9 @@ _Sequential phase auto-filing by \`shared-phase-filing.sh\` (t2740)._"
 # Guards:
 #   1. Feature flag AIDEVOPS_SEQUENTIAL_PHASE_AUTOFILE must be 1
 #   2. Child issue must reference a parent-task issue
-#   3. Parent must have a ## Phases section
-#   4. Next phase must exist, be marked [auto-fire:on-prior-merge],
+#   3. Parent issue must still be open and not carry no-auto-dispatch
+#   4. Parent must have a ## Phases section
+#   5. Next phase must exist, be marked [auto-fire:on-prior-merge],
 #      and not already have a child issue filed
 #
 # Args: $1=child_issue (just closed), $2=repo_slug
@@ -763,16 +816,14 @@ auto_file_next_phase() {
 	fi
 	_phase_log "Child #${child_issue}: found parent-task #${parent_issue}"
 
-	# Read parent issue body and title in a single API call
-	local parent_api="repos/${repo_slug}/issues/${parent_issue}"
-	local parent_body parent_title _parent_json
-	_parent_json=$(gh api "$parent_api" \
-		--jq '{body: (.body // ""), title: (.title // "")}' 2>/dev/null) || _parent_json=""
-	[[ -n "$_parent_json" ]] || return 0
-	parent_body=$(printf '%s' "$_parent_json" | jq -r '.body // ""')
-	parent_title=$(printf '%s' "$_parent_json" | jq -r '.title // ""')
+	# Read parent issue metadata and ensure the parent is still open.
+	local parent_body parent_title
+	_read_open_phase_parent_fields "$parent_issue" "$repo_slug"
+	parent_body="$_PHASE_PARENT_BODY"
+	parent_title="$_PHASE_PARENT_TITLE"
+	[[ -n "$parent_body" ]] || return 0
 
-	# Guard 3: parse phases
+	# Guard 4: parse phases
 	local phases
 	phases=$(_parse_phases_section "$parent_body")
 	if [[ -z "$phases" ]]; then

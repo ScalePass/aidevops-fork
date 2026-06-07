@@ -17,10 +17,11 @@
 #        merged=0 + eligible=0 → gauge reset to 0 (streak broken)
 #        merged=0 + eligible>0 → gauge incremented by 1
 #   7. _pms_count_eligible_unmerged_for_repo excludes PRs blocked by
-#      read-only merge gates (required checks, worker PR with no linked issue,
-#      non-collaborator author without maintainer crypto-approval, and unknown
-#      authors that must not bypass the collaborator check) and keeps processing
-#      when GitHub returns a null PR author for deleted users.
+#      read-only merge gates (required checks, interactive PRs held for manual
+#      merge, worker PR with no linked issue, non-collaborator author without
+#      maintainer crypto-approval, and unknown authors that must not bypass the
+#      collaborator check) and keeps processing when GitHub returns a null PR
+#      author for deleted users.
 #   8. _detect_pattern_outage de-duplicates repeated PR observations.
 #   9. pulse-merge-stuck.sh and pulse-stats-helper.sh pass shellcheck.
 #
@@ -89,9 +90,10 @@ assert_gt() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODULE="$SCRIPT_DIR/pulse-merge-stuck.sh"
 STATS_HELPER="$SCRIPT_DIR/pulse-stats-helper.sh"
+MERGE_SCRIPT="$SCRIPT_DIR/pulse-merge.sh"
 CONF_FILE="$SCRIPT_DIR/../configs/pulse-merge-stuck.conf"
 
-for required in "$MODULE" "$STATS_HELPER"; do
+for required in "$MODULE" "$STATS_HELPER" "$MERGE_SCRIPT"; do
 	if [[ ! -f "$required" ]]; then
 		echo "${TEST_RED}FATAL${TEST_NC}: $required not found"
 		exit 1
@@ -259,6 +261,11 @@ gh() {
 	return 1
 }
 
+gh_create_issue() {
+	printf '%s\n' "gh_create_issue $*" >>"$GH_CALLS"
+	return 0
+}
+
 # Reset gauge for a clean state.
 pulse_stats_set_gauge "pulse_merge_zero_progress_cycles" "0" >/dev/null 2>&1
 
@@ -273,6 +280,26 @@ pulse_stats_set_gauge "pulse_merge_zero_progress_cycles" "2" >/dev/null 2>&1
 pulse_merge_zero_progress_record 0 0 >/dev/null 2>&1
 got=$(pulse_stats_get_gauge "pulse_merge_zero_progress_cycles")
 assert_eq "5b: merged=0 + eligible=0 resets cycles to 0 (was 2)" "0" "$got"
+
+# 5b.1: a healthy idle cycle also sweeps stale open zero-progress issues when
+# pulse-stats.json has already lost the non-zero gauge (for example after log
+# rotation/truncation). The sweep is throttled in production, so disable the
+# interval here for deterministic coverage.
+PMS_TEST_OPEN_ZERO_PROGRESS_ISSUE="23036"
+AIDEVOPS_MERGE_ZERO_PROGRESS_RECOVERY_CHECK_SECONDS=0
+: >"$GH_CALLS"
+pulse_stats_set_gauge "pulse_merge_zero_progress_cycles" "0" >/dev/null 2>&1
+pulse_merge_zero_progress_record 0 0 >/dev/null 2>&1
+if grep -q 'gh issue close 23036 --repo marcusquinn/aidevops --reason completed' "$GH_CALLS"; then
+	echo "${TEST_GREEN}PASS${TEST_NC}: 5b.1: stale zero-progress meta-issue is swept after recovered idle cycle"
+else
+	TESTS_FAILED=$((TESTS_FAILED + 1))
+	echo "${TEST_RED}FAIL${TEST_NC}: 5b.1: stale zero-progress meta-issue sweep is missing"
+	echo "  gh calls: $(cat "$GH_CALLS")"
+fi
+TESTS_RUN=$((TESTS_RUN + 1))
+PMS_TEST_OPEN_ZERO_PROGRESS_ISSUE=""
+AIDEVOPS_MERGE_ZERO_PROGRESS_RECOVERY_CHECK_SECONDS=3600
 
 # 5c: merged=0 + eligible>0 → gauge increments by 1
 pulse_stats_set_gauge "pulse_merge_zero_progress_cycles" "0" >/dev/null 2>&1
@@ -299,6 +326,31 @@ else
 fi
 TESTS_RUN=$((TESTS_RUN + 1))
 PMS_TEST_OPEN_ZERO_PROGRESS_ISSUE=""
+
+# 5g: issue filing is edge-triggered at the configured threshold. Once the
+# gauge is already above threshold, closing the open issue externally must not
+# produce one fresh meta-issue per pulse cycle.
+: >"$GH_CALLS"
+AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES=5
+pulse_stats_set_gauge "pulse_merge_zero_progress_cycles" "4" >/dev/null 2>&1
+pulse_stats_set_gauge "pulse_merge_eligible_stuck_pr_count" "0" >/dev/null 2>&1
+pulse_merge_zero_progress_record 1 0 >/dev/null 2>&1
+pulse_merge_zero_progress_record 1 0 >/dev/null 2>&1
+create_count=$(grep -c 'gh_create_issue --repo marcusquinn/aidevops' "$GH_CALLS")
+assert_eq "5g: zero-progress meta-issue files once on threshold crossing" "1" "$create_count"
+
+# 5h: an invalid threshold environment value falls back to the safe default
+# instead of making Bash integer comparisons abort the pulse.
+: >"$GH_CALLS"
+AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES="not-a-number"
+pulse_stats_set_gauge "pulse_merge_zero_progress_cycles" "4" >/dev/null 2>&1
+pulse_stats_set_gauge "pulse_merge_eligible_stuck_pr_count" "0" >/dev/null 2>&1
+pulse_merge_zero_progress_record 1 0 >/dev/null 2>&1
+got=$(pulse_stats_get_gauge "pulse_merge_zero_progress_cycles")
+create_count=$(grep -c 'gh_create_issue --repo marcusquinn/aidevops' "$GH_CALLS")
+assert_eq "5h: invalid zero-progress threshold still increments gauge" "5" "$got"
+assert_eq "5h: invalid zero-progress threshold falls back to default for filing" "1" "$create_count"
+AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES=5
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -320,7 +372,9 @@ gh() {
 {"number":107,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"author":{"login":"external"}},
 {"number":108,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"author":{"login":"trusted"}},
 {"number":109,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[],"author":null},
-{"number":110,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":null,"author":{"login":"external"}}
+{"number":110,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":null,"author":{"login":"external"}},
+{"number":111,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[{"name":"origin:interactive"}],"author":{"login":"trusted"}},
+{"number":112,"mergeable":"MERGEABLE","reviewDecision":"APPROVED","isDraft":false,"labels":[{"name":"origin:interactive"},{"name":"allow-auto-merge"}],"author":{"login":"trusted"}}
 ]'
 		return 0
 	fi
@@ -364,8 +418,19 @@ _has_maintainer_crypto_approval() {
 	return 1
 }
 
+_interactive_pr_auto_merge_allowed() {
+	local pr_number="$1"
+	local repo_slug="$2"
+	local labels_str="$3"
+	[[ -n "$pr_number" && -n "$repo_slug" ]] || return 1
+	if [[ ",${labels_str}," == *",allow-auto-merge,"* ]]; then
+		return 0
+	fi
+	return 1
+}
+
 got=$(_pms_count_eligible_unmerged_for_repo "example/repo")
-assert_eq "6a: zero-progress count excludes read-only merge-gate blockers" "2" "$got"
+assert_eq "6a: zero-progress count excludes read-only merge-gate blockers" "3" "$got"
 
 PMS_TEST_COUNT_AUTHORS_FILE="$TEST_TMPDIR/count-authors.log"
 : >"$PMS_TEST_COUNT_AUTHORS_FILE"
@@ -398,10 +463,106 @@ assert_eq "6b: null author does not abort zero-progress candidate parsing" "1" "
 assert_eq "6c: null author falls back to unknown" "109:unknown" "$count_authors"
 echo ""
 
+# GH#24383: GitHub can return "Merge already in progress" for a PR that a
+# previous pulse cycle has already submitted for server-side merge. That is
+# progress, not a deterministic merge failure; otherwise the zero-progress
+# detector can file false collapse issues while GitHub is completing the merge.
+TESTS_RUN=$((TESTS_RUN + 1))
+if grep -q "Merge already in progress" "$MERGE_SCRIPT" \
+	&& grep -Fq "_handle_post_merge_actions \"\$pr_number\" \"\$repo_slug\" \"\$linked_issue\" \"\$merge_summary\" \"\$_ipr_labels\"" "$MERGE_SCRIPT" \
+	&& grep -Fq "return \$?" "$MERGE_SCRIPT"; then
+	echo "${TEST_GREEN}PASS${TEST_NC}: 6d: merge-in-progress is counted as zero-progress-breaking progress"
+else
+	TESTS_FAILED=$((TESTS_FAILED + 1))
+	echo "${TEST_RED}FAIL${TEST_NC}: 6d: merge-in-progress progress accounting is missing"
+fi
+echo ""
+
 # ---------------------------------------------------------------------------
-# Section 7: pattern outage deduplication.
+# Section 7: REST check-run classification helpers.
 # ---------------------------------------------------------------------------
-echo "--- Section 7: pattern outage deduplication ---"
+echo "--- Section 7: REST check-run classification helpers ---"
+
+gh_pr_view() {
+	local pr_number="$1"
+	local repo_flag="$2"
+	local repo_slug="$3"
+	: "$repo_flag"
+	[[ -n "$repo_slug" ]] || return 1
+	case "$pr_number" in
+	201) printf '{"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha-queued"}' ;;
+	202) printf '{"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha-failing"}' ;;
+	203) printf 'sha-failing' ;;
+	204) printf '{"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha-legacy-failing"}' ;;
+	205) printf 'sha-legacy-failing' ;;
+	206) printf '{"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha-legacy-error"}' ;;
+	207) printf 'sha-legacy-error' ;;
+	*) printf '{"labels":[],"mergeable":"MERGEABLE","headRefOid":"sha-clean"}' ;;
+	esac
+	return 0
+}
+
+gh_pr_check_runs_rest() {
+	local repo_slug="$1"
+	local head_sha="$2"
+	[[ -n "$repo_slug" ]] || return 1
+	case "$head_sha" in
+	sha-queued) printf '[{"name":"Build","conclusion":null,"status":"queued"}]' ;;
+	sha-failing) printf '[{"name":"Format","conclusion":"failure","status":"completed"},{"name":"Lint","conclusion":"timed_out","status":"completed"}]' ;;
+	sha-legacy-failing) printf '[{"context":"legacy-ci","state":"failure"}]' ;;
+	sha-legacy-error) printf '[{"context":"legacy-error","state":"error"}]' ;;
+	*) printf '[]' ;;
+	esac
+	return 0
+}
+
+gh() {
+	local command_name="${1:-}"
+	local path_arg="${2:-}"
+	if [[ "$command_name" == "api" && "$path_arg" == "repos/example/repo" ]]; then
+		printf 'main'
+		return 0
+	fi
+	if [[ "$command_name" == "api" && "$path_arg" == "repos/example/repo/branches/main/protection/required_status_checks" ]]; then
+		printf '{}'
+		return 0
+	fi
+	return 1
+}
+
+got=$(_classify_stuck_pr "201" "example/repo" "1")
+assert_eq "7a: saturated queued check classifies as runner saturation" \
+	"STUCK_RUNNER_QUEUE_SATURATION" "$got"
+
+got=$(_classify_stuck_pr "202" "example/repo" "0")
+assert_eq "7b: REST check-run failure classifies as checks failing" \
+	"STUCK_CHECKS_FAILING" "$got"
+
+got=$(_pms_failure_fingerprint "203" "example/repo")
+assert_eq "7c: failure fingerprint comes from REST check-runs" \
+	"Format,Lint" "$got"
+
+got=$(_classify_stuck_pr "204" "example/repo" "0")
+assert_eq "7d: legacy status context state=failure classifies as checks failing" \
+	"STUCK_CHECKS_FAILING" "$got"
+
+got=$(_pms_failure_fingerprint "205" "example/repo")
+assert_eq "7e: legacy status context fingerprint uses context name" \
+	"legacy-ci" "$got"
+
+got=$(_classify_stuck_pr "206" "example/repo" "0")
+assert_eq "7f: legacy status context state=error classifies as checks failing" \
+	"STUCK_CHECKS_FAILING" "$got"
+
+got=$(_pms_failure_fingerprint "207" "example/repo")
+assert_eq "7g: legacy error status context fingerprint uses context name" \
+	"legacy-error" "$got"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Section 8: pattern outage deduplication.
+# ---------------------------------------------------------------------------
+echo "--- Section 8: pattern outage deduplication ---"
 
 _pms_failure_fingerprint() {
 	local pr_number="$1"
@@ -432,9 +593,9 @@ assert_eq "7a: duplicate PR observations counted once" \
 echo ""
 
 # ---------------------------------------------------------------------------
-# Section 8: default branch guidance.
+# Section 9: default branch guidance.
 # ---------------------------------------------------------------------------
-echo "--- Section 8: default branch guidance ---"
+echo "--- Section 9: default branch guidance ---"
 
 gh() {
 	local command_name="${1:-}"
@@ -451,9 +612,9 @@ assert_eq "8a: default branch resolves from repo API" "develop" "$got"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Section 9: shellcheck cleanliness.
+# Section 10: shellcheck cleanliness.
 # ---------------------------------------------------------------------------
-echo "--- Section 9: shellcheck ---"
+echo "--- Section 10: shellcheck ---"
 
 run_shellcheck() {
 	local label="$1" file="$2"

@@ -42,6 +42,8 @@ set -euo pipefail
 _DSI_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Source dependencies (order matters: shared-constants first, then GH wrappers).
+# shared-constants.sh also sources shared-worktree-registry.sh when present,
+# which defines register_worktree for the manual dispatch precreated worktree.
 # NOTE: dispatch-dedup-helper.sh is NOT sourced — it has no source guard and
 # would execute its main() with our $@. We invoke it as an external command
 # instead via _DSI_DEDUP_HELPER below.
@@ -172,6 +174,28 @@ _dsi_guard_no_interactive_hold() {
 		_dsi_err "Target carries an interactive review hold label; refusing worker dispatch (GH#22948)"
 		return 1
 	fi
+	return 0
+}
+
+#######################################
+# Block manual worker dispatch until maintainer-review trust gates are cleared.
+# Args: $1 - labels CSV, $2 - issue number, $3 - owner/repo slug
+# Returns: 0 when safe, 1 when maintainer review is still required
+#######################################
+_dsi_guard_no_maintainer_review_required() {
+	local labels_csv="$1"
+	local issue_number="$2"
+	local repo_slug="$3"
+	local labels_with_commas=""
+	labels_with_commas=$(printf ',%s,' "$labels_csv")
+
+	#aidevops:trust-boundary -- manual dispatch must not bypass signed/maintainer issue approval.
+	if [[ "$labels_with_commas" == *",needs-maintainer-review,"* ]]; then
+		_dsi_err "Issue #${issue_number} in ${repo_slug} still requires maintainer review; refusing manual worker dispatch"
+		_dsi_info "  Required action: run 'sudo aidevops approve issue ${issue_number} ${repo_slug}' or record an equivalent maintainer decision before dispatch."
+		return 1
+	fi
+
 	return 0
 }
 
@@ -310,6 +334,13 @@ _dsi_create_worktree() {
 			_DSI_WORKTREE_PATH=$(git -C "$repo_path" worktree list --porcelain | awk -v b="$branch" '/^worktree / {p=$0;sub(/^worktree /,"",p)} $0 == "branch refs/heads/" b {print p; exit}')
 			_DSI_WORKTREE_BRANCH="$branch"
 			if [[ -n "$_DSI_WORKTREE_PATH" && -d "$_DSI_WORKTREE_PATH" ]]; then
+				if declare -F register_worktree >/dev/null; then
+					register_worktree "$_DSI_WORKTREE_PATH" "$_DSI_WORKTREE_BRANCH" \
+						--task "$issue_number" \
+						--session "dispatch-precreate-${issue_number}" || _dsi_warn "Worktree registration failed (non-fatal)"
+				else
+					_dsi_warn "Worktree registry helper unavailable; ownership registration skipped"
+				fi
 				return 0
 			fi
 			_dsi_warn "Worktree path unresolvable after add (attempt ${attempt}/${max_attempts}, branch=${branch})"
@@ -661,6 +692,78 @@ _dsi_resolve_worker_pid() {
 }
 
 #######################################
+# Return the detached runtime log path used by headless-runtime-helper.sh.
+# Args: $1 - session_key
+# Stdout: absolute log path
+#######################################
+_dsi_detached_runtime_log() {
+	local session_key="$1"
+	printf '/tmp/worker-%s.log' "$session_key"
+	return 0
+}
+
+#######################################
+# Wait until a detached worker reaches an observable readiness signal.
+#
+# The outer nohup wrapper can exit successfully before model selection,
+# canary, and worker preparation complete. Treat launch as ready only when the
+# real child is alive and has emitted the canonical worker-start marker, or has
+# exited/failed with inspectable log evidence. Ledger registration happens
+# before the worker-start marker, so it is progress evidence but not readiness.
+# This prevents silent success when pre-worker setup blocks.
+# Args:
+#   $1 - issue_number
+#   $2 - repo_slug
+#   $3 - session_key
+#   $4 - worker_pid
+#   $5 - launcher_log path
+# Returns: 0 ready, 1 failed/not-ready before timeout
+#######################################
+_dsi_wait_for_worker_readiness() {
+	local issue_number="$1"
+	local repo_slug="$2"
+	local session_key="$3"
+	local worker_pid="$4"
+	local launcher_log="$5"
+	local runtime_log
+	runtime_log=$(_dsi_detached_runtime_log "$session_key")
+	local timeout_s="${AIDEVOPS_DSI_READY_TIMEOUT_SECONDS:-20}"
+	local attempts=0
+	local max_attempts=200
+
+	if ! [[ "$timeout_s" =~ ^[0-9]+$ ]]; then
+		timeout_s=20
+	fi
+	max_attempts=$((timeout_s * 10))
+
+	while [[ "$attempts" -le "$max_attempts" ]]; do
+		if [[ -s "$runtime_log" ]] &&
+			grep -Fq -e "worker_started" -e "worker_start session=${session_key}" "$runtime_log" 2>/dev/null; then
+			return 0
+		fi
+
+		if [[ -n "$worker_pid" ]] && ! kill -0 "$worker_pid" 2>/dev/null; then
+			_dsi_err "Worker launch failed — detached child exited before readiness"
+			_dsi_info "  Launcher log: ${launcher_log}"
+			_dsi_info "  Runtime log:  ${runtime_log}"
+			return 1
+		fi
+
+		if [[ "$attempts" -eq "$max_attempts" ]]; then
+			break
+		fi
+		sleep 0.1
+		attempts=$((attempts + 1))
+	done
+
+	_dsi_err "Worker launch did not reach readiness within ${timeout_s}s"
+	_dsi_info "  Worker PID:   ${worker_pid}"
+	_dsi_info "  Launcher log: ${launcher_log}"
+	_dsi_info "  Runtime log:  ${runtime_log}"
+	return 1
+}
+
+#######################################
 # Build the worker prompt.  Headless-runtime-lib auto-appends
 # HEADLESS_CONTINUATION_CONTRACT_V6 when it sees "/full-loop" — see
 # headless-runtime-lib.sh:437-509.
@@ -691,6 +794,7 @@ _dsi_build_prompt() {
 #   $8 - worker_log path
 #   $9 - issue_number
 #   $10 - repo_slug
+#   $11 - self_login (dispatching GitHub login)
 # Stdout (on success): worker PID (single line)
 # Returns: 0 launched, 1 failed
 #######################################
@@ -705,12 +809,14 @@ _dsi_launch_worker() {
 	local worker_log="$8"
 	local issue_number="$9"
 	local repo_slug="${10:-}"
+	local self_login="${11:-}"
 
 	local -a cmd=(
 		env
 		HEADLESS=1
 		FULL_LOOP_HEADLESS=true
 		WORKER_ISSUE_NUMBER="$issue_number"
+		WORKER_GITHUB_LOGIN="$self_login"
 		WORKER_WORKTREE_PATH="$worktree_path"
 		WORKER_REPO_SLUG="$repo_slug"
 		GITHUB_REPOSITORY="$repo_slug"
@@ -898,6 +1004,7 @@ cmd_dispatch() {
 		return 1
 	fi
 	_dsi_guard_no_interactive_hold "$_DSI_ISSUE_LABELS" || return 1
+	_dsi_guard_no_maintainer_review_required "$_DSI_ISSUE_LABELS" "$issue_number" "$repo_slug" || return 1
 	_dsi_check_parent_task "$_DSI_ISSUE_LABELS" || return 1
 
 	# Step 3: dedup check (informational under --dry-run, blocking otherwise).
@@ -981,7 +1088,7 @@ _dsi_dispatch_after_dedup_clear() {
 	# Steps 8-10 + report: launch worker, resolve real PID, register ledger,
 	# print success summary. Extracted to keep cmd_dispatch under the 100-line
 	# function-complexity gate (t3000).
-	if ! _dsi_launch_and_report "$issue_number" "$repo_slug" "$session_key"; then
+	if ! _dsi_launch_and_report "$issue_number" "$repo_slug" "$self_login" "$session_key"; then
 		_dsi_reset_after_prelaunch_failure "$issue_number" "$repo_slug" "$self_login" "worker_launch_failed"
 		return 1
 	fi
@@ -1030,13 +1137,15 @@ _dsi_reset_after_prelaunch_failure() {
 # Args:
 #   $1 issue_number
 #   $2 repo_slug
-#   $3 session_key
+#   $3 self_login
+#   $4 session_key
 # Reads: _DSI_ISSUE_URL, _DSI_LOG_DIR, _DSI_WORKTREE_PATH, _DSI_ISSUE_TITLE,
 #        _DSI_TIER, _DSI_SELECTED_MODEL, _DSI_ARG_AGENT.
 _dsi_launch_and_report() {
 	local issue_number="$1"
 	local repo_slug="$2"
-	local session_key="$3"
+	local self_login="$3"
+	local session_key="$4"
 
 	local prompt worker_log
 	prompt=$(_dsi_build_prompt "$issue_number" "$_DSI_ISSUE_URL")
@@ -1045,10 +1154,11 @@ _dsi_launch_and_report() {
 	launch_pid=$(_dsi_launch_worker \
 		"$session_key" "$_DSI_WORKTREE_PATH" "$_DSI_ISSUE_TITLE" \
 		"$prompt" "$_DSI_TIER" "$_DSI_SELECTED_MODEL" \
-		"$_DSI_ARG_AGENT" "$worker_log" "$issue_number" "$repo_slug") || return 1
+		"$_DSI_ARG_AGENT" "$worker_log" "$issue_number" "$repo_slug" "$self_login") || return 1
 
 	local worker_pid
 	worker_pid=$(_dsi_resolve_worker_pid "$worker_log" "$launch_pid")
+	_dsi_wait_for_worker_readiness "$issue_number" "$repo_slug" "$session_key" "$worker_pid" "$worker_log" || return 1
 
 	_dsi_register_ledger "$issue_number" "$repo_slug" "$session_key" "$worker_pid"
 

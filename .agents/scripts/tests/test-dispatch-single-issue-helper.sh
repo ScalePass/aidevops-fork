@@ -30,11 +30,19 @@ TESTS_RUN=0
 TESTS_FAILED=0
 SET_ISSUE_STATUS_LOG=""
 SET_ORIGIN_LABEL_LOG=""
+REGISTER_WORKTREE_LOG=""
+MOCK_WORKTREE_HELPER_LOG=""
 MOCK_GH_ISSUE_STATE="OPEN"
+MOCK_GH_LABELS_JSON="[]"
 MOCK_GH_FAIL="0"
 MOCK_GH_TARGET_IS_PR="0"
 MOCK_PS_LINES=""
 MOCK_LEDGER_RECORD=""
+MOCK_GIT_WORKTREE_LIST="0"
+MOCK_REPO_PATH=""
+MOCK_WORKTREE_PATH=""
+MOCK_WORKTREE_BRANCH=""
+MOCK_DATE_UTC=""
 
 print_result() {
 	local test_name="$1"
@@ -108,6 +116,44 @@ _install_mock_set_origin_label() {
 }
 
 # shellcheck disable=SC2317
+register_worktree() {
+	if [[ -z "${REGISTER_WORKTREE_LOG:-}" ]]; then
+		return 0
+	fi
+	printf 'register_worktree %s\n' "$*" >>"$REGISTER_WORKTREE_LOG"
+	return $?
+}
+
+# shellcheck disable=SC2317
+date() {
+	local date_first="${1:-}"
+	local date_format="${2:-}"
+	if [[ -n "$MOCK_DATE_UTC" && "$date_first" == "-u" && "$date_format" == "+%Y%m%d-%H%M%S" ]]; then
+		printf '%s\n' "$MOCK_DATE_UTC"
+		return 0
+	fi
+	command date "$@"
+	return $?
+}
+
+# shellcheck disable=SC2317
+git() {
+	local git_first="${1:-}"
+	local git_repo="${2:-}"
+	local git_command="${3:-}"
+	local git_subcommand="${4:-}"
+	local git_format="${5:-}"
+	if [[ "$MOCK_GIT_WORKTREE_LIST" == "1" && "$git_first" == "-C" && "$git_repo" == "$MOCK_REPO_PATH" &&
+		"$git_command" == "worktree" && "$git_subcommand" == "list" && "$git_format" == "--porcelain" ]]; then
+		printf 'worktree %s\nHEAD 0000000000000000000000000000000000000000\nbranch refs/heads/%s\n\n' \
+			"$MOCK_WORKTREE_PATH" "$MOCK_WORKTREE_BRANCH"
+		return 0
+	fi
+	command git "$@"
+	return $?
+}
+
+# shellcheck disable=SC2317
 gh() {
 	local gh_subcommand="${1:-}"
 	local gh_resource="${2:-}"
@@ -116,8 +162,8 @@ gh() {
 	fi
 
 	if [[ "$gh_subcommand" == "issue" && "$gh_resource" == "view" ]]; then
-		printf '{"number":%s,"title":"Mock issue","state":"%s","labels":[],"assignees":[],"url":"https://example.invalid/issues/%s"}\n' \
-			"$3" "$MOCK_GH_ISSUE_STATE" "$3"
+		printf '{"number":%s,"title":"Mock issue","state":"%s","labels":%s,"assignees":[],"url":"https://example.invalid/issues/%s"}\n' \
+			"$3" "$MOCK_GH_ISSUE_STATE" "$MOCK_GH_LABELS_JSON" "$3"
 		return 0
 	fi
 
@@ -154,6 +200,16 @@ _dsi_repo_slug_for_worktree() {
 	*) printf '\n' ;;
 	esac
 	return 0
+}
+
+# shellcheck disable=SC2317
+_dsi_repo_path_for_slug() {
+	local repo_slug="$1"
+	if [[ "$repo_slug" == "owner/repo" && -n "$MOCK_REPO_PATH" ]]; then
+		printf '%s\n' "$MOCK_REPO_PATH"
+		return 0
+	fi
+	return 1
 }
 
 # shellcheck disable=SC2317
@@ -515,6 +571,37 @@ test_interactive_hold_guard_allows_auto_dispatch_handoff() {
 	return 0
 }
 
+test_maintainer_review_guard_blocks_manual_dispatch() {
+	local rc=0
+	local out=""
+	out=$(_dsi_guard_no_maintainer_review_required "bug,needs-maintainer-review" 24354 owner/repo 2>&1) || rc=$?
+
+	local check=1
+	[[ "$rc" -eq 1 && "$out" == *"requires maintainer review"* && "$out" == *"sudo aidevops approve issue 24354 owner/repo"* ]] && check=0
+	print_result "maintainer-review guard blocks manual dispatch" "$check" "rc=$rc output=$out"
+	return 0
+}
+
+test_cmd_dispatch_blocks_needs_maintainer_review_before_dedup() {
+	MOCK_GH_FAIL="0"
+	MOCK_GH_TARGET_IS_PR="0"
+	MOCK_GH_ISSUE_STATE="OPEN"
+	MOCK_GH_LABELS_JSON='[{"name":"needs-maintainer-review"}]'
+
+	local original_dedup_helper="$_DSI_DEDUP_HELPER"
+	_DSI_DEDUP_HELPER="/path/that/must/not/be/called"
+	local out="" rc=0
+	out=$(cmd_dispatch 123 owner/repo --dry-run 2>&1) || rc=$?
+
+	local check=1
+	[[ "$rc" -eq 1 && "$out" == *"requires maintainer review"* && "$out" != *"must/not/be/called"* ]] && check=0
+	print_result "dispatch command blocks needs-maintainer-review before dedup" "$check" "rc=$rc output=$out"
+
+	_DSI_DEDUP_HELPER="$original_dedup_helper"
+	MOCK_GH_LABELS_JSON="[]"
+	return 0
+}
+
 test_launch_worker_forwards_agent() {
 	local failed=1
 	if grep -Fq "cmd+=(--agent \"\$agent_name\")" "$HELPER_PATH"; then
@@ -534,6 +621,16 @@ test_launch_worker_forwards_repo_contract() {
 	return 0
 }
 
+test_launch_worker_forwards_github_login() {
+	local failed=1
+	if grep -Fq "WORKER_GITHUB_LOGIN=\"\$self_login\"" "$HELPER_PATH" &&
+		grep -Fq "_dsi_launch_and_report \"\$issue_number\" \"\$repo_slug\" \"\$self_login\" \"\$session_key\"" "$HELPER_PATH"; then
+		failed=0
+	fi
+	print_result "worker launch forwards dispatching GitHub login" "$failed"
+	return 0
+}
+
 test_create_worktree_uses_target_repo_path() {
 	local failed=1
 	if grep -Fq "repo_path=\$(_dsi_repo_path_for_slug \"\$repo_slug\")" "$HELPER_PATH" &&
@@ -542,6 +639,137 @@ test_create_worktree_uses_target_repo_path() {
 		failed=0
 	fi
 	print_result "worktree creation uses target repo path" "$failed"
+	return 0
+}
+
+test_create_worktree_registers_dispatch_owner() {
+	local test_dir=""
+	test_dir=$(mktemp -d)
+	MOCK_REPO_PATH="${test_dir}/repo"
+	MOCK_WORKTREE_PATH="${test_dir}/worktree"
+	MOCK_DATE_UTC="20260515-123456"
+	MOCK_WORKTREE_BRANCH="feature/auto-${MOCK_DATE_UTC}-gh12345"
+	MOCK_GIT_WORKTREE_LIST="1"
+	mkdir -p "$MOCK_REPO_PATH" "$MOCK_WORKTREE_PATH"
+	REGISTER_WORKTREE_LOG="${test_dir}/register-worktree.log"
+	MOCK_WORKTREE_HELPER_LOG="${test_dir}/worktree-helper.log"
+	export MOCK_WORKTREE_HELPER_LOG
+	: >"$REGISTER_WORKTREE_LOG"
+	: >"$MOCK_WORKTREE_HELPER_LOG"
+
+	local original_worktree_helper="$_DSI_WORKTREE_HELPER"
+	local positional_args_ref='$*'
+	_DSI_WORKTREE_HELPER="${test_dir}/worktree-helper.sh"
+	{
+		printf '%s\n' '#!/usr/bin/env bash'
+		printf "printf 'worktree-helper %%s\\n' \"%s\" >>%q\n" "$positional_args_ref" "$MOCK_WORKTREE_HELPER_LOG"
+		printf '%s\n' 'exit 0'
+	} >"$_DSI_WORKTREE_HELPER"
+	chmod +x "$_DSI_WORKTREE_HELPER"
+
+	local rc=0
+	_dsi_create_worktree 12345 owner/repo >/dev/null 2>&1 || rc=$?
+
+	local registered=""
+	registered=$(<"$REGISTER_WORKTREE_LOG")
+	local helper_call=""
+	helper_call=$(<"$MOCK_WORKTREE_HELPER_LOG")
+	rm -f "$REGISTER_WORKTREE_LOG" "$MOCK_WORKTREE_HELPER_LOG"
+	local passed=1
+	if [[ "$rc" -eq 0 && "$registered" == *"register_worktree ${MOCK_WORKTREE_PATH} ${MOCK_WORKTREE_BRANCH}"* &&
+		"$registered" == *"--task 12345"* && "$registered" == *"--session dispatch-precreate-12345"* &&
+		"$helper_call" == *"--issue 12345"* ]]; then
+		passed=0
+	fi
+
+	_DSI_WORKTREE_HELPER="$original_worktree_helper"
+	MOCK_GIT_WORKTREE_LIST="0"
+	MOCK_REPO_PATH=""
+	MOCK_WORKTREE_PATH=""
+	MOCK_WORKTREE_BRANCH=""
+	MOCK_DATE_UTC=""
+	REGISTER_WORKTREE_LOG=""
+	unset MOCK_WORKTREE_HELPER_LOG
+	MOCK_WORKTREE_HELPER_LOG=""
+	rm -rf "$test_dir"
+	print_result "worktree creation registers dispatch owner metadata" "$passed" "rc=$rc registered=$registered helper=$helper_call"
+	return 0
+}
+
+test_create_worktree_registration_warns_on_failure() {
+	local failed=1
+	if grep -Fq "register_worktree \"\$_DSI_WORKTREE_PATH\" \"\$_DSI_WORKTREE_BRANCH\"" "$HELPER_PATH" &&
+		grep -Fq "|| _dsi_warn \"Worktree registration failed (non-fatal)\"" "$HELPER_PATH" &&
+		! grep -Fq -- "--session \"dispatch-precreate-\${issue_number}\" 2>/dev/null || true" "$HELPER_PATH"; then
+		failed=0
+	fi
+	print_result "worktree registration failure stays visible" "$failed"
+	return 0
+}
+
+
+test_readiness_accepts_worker_started_marker() {
+	MOCK_LEDGER_RECORD=""
+	local session_key="manual-cli-ready-$$"
+	local runtime_log=""
+	runtime_log=$(_dsi_detached_runtime_log "$session_key")
+	printf '%s\n' "[lifecycle] worker_started session=${session_key}" >"$runtime_log"
+
+	local out="" rc=0
+	out=$(AIDEVOPS_DSI_READY_TIMEOUT_SECONDS=0 _dsi_wait_for_worker_readiness 12345 owner/repo "$session_key" "$$" /tmp/manual-ready.log 2>&1) || rc=$?
+	rm -f "$runtime_log"
+
+	local passed=1
+	[[ "$rc" -eq 0 && -z "$out" ]] && passed=0
+	print_result "readiness gate accepts worker_started marker" "$passed" "rc=$rc output=$out"
+	return 0
+}
+
+test_readiness_rejects_live_child_without_ready_signal() {
+	MOCK_LEDGER_RECORD=""
+	local session_key="manual-cli-not-ready-$$"
+	local runtime_log=""
+	runtime_log=$(_dsi_detached_runtime_log "$session_key")
+	rm -f "$runtime_log"
+
+	local out="" rc=0
+	out=$(AIDEVOPS_DSI_READY_TIMEOUT_SECONDS=0 _dsi_wait_for_worker_readiness 12345 owner/repo "$session_key" "$$" /tmp/manual-not-ready.log 2>&1) || rc=$?
+	rm -f "$runtime_log"
+
+	local passed=1
+	[[ "$rc" -eq 1 && "$out" == *"did not reach readiness"* && "$out" == *"Runtime log:"* ]] && passed=0
+	print_result "readiness gate rejects live child without ready signal" "$passed" "rc=$rc output=$out"
+	return 0
+}
+
+test_readiness_rejects_ledger_without_worker_started() {
+	MOCK_LEDGER_RECORD=$'ledger\t888\t/tmp/manual.log\t/tmp/aidevops-existing\tmanual-cli-12345-ledger'
+	local session_key="manual-cli-ledger-only-$$"
+	local runtime_log=""
+	runtime_log=$(_dsi_detached_runtime_log "$session_key")
+	rm -f "$runtime_log"
+
+	local out="" rc=0
+	out=$(AIDEVOPS_DSI_READY_TIMEOUT_SECONDS=0 _dsi_wait_for_worker_readiness 12345 owner/repo "$session_key" "$$" /tmp/manual-ledger-only.log 2>&1) || rc=$?
+	rm -f "$runtime_log"
+	MOCK_LEDGER_RECORD=""
+
+	local passed=1
+	[[ "$rc" -eq 1 && "$out" == *"did not reach readiness"* ]] && passed=0
+	print_result "readiness gate rejects ledger without worker_started" "$passed" "rc=$rc output=$out"
+	return 0
+}
+
+test_launch_report_waits_before_success_message() {
+	local wait_line="" ok_line=""
+	wait_line=$(grep -n '_dsi_wait_for_worker_readiness' "$HELPER_PATH" | tail -1 | cut -d: -f1)
+	ok_line=$(grep -n '_dsi_ok "Worker launched"' "$HELPER_PATH" | tail -1 | cut -d: -f1)
+
+	local passed=1
+	if [[ -n "$wait_line" && -n "$ok_line" && "$wait_line" -lt "$ok_line" ]]; then
+		passed=0
+	fi
+	print_result "launch report waits for readiness before Worker launched" "$passed" "wait_line=$wait_line ok_line=$ok_line"
 	return 0
 }
 
@@ -629,10 +857,19 @@ _run_tests() {
 	test_interactive_hold_guard_blocks_review_label
 	test_interactive_hold_guard_blocks_origin_interactive_without_handoff
 	test_interactive_hold_guard_allows_auto_dispatch_handoff
+	test_maintainer_review_guard_blocks_manual_dispatch
+	test_cmd_dispatch_blocks_needs_maintainer_review_before_dedup
 	test_agent_flag_parses_with_default
 	test_launch_worker_forwards_agent
 	test_launch_worker_forwards_repo_contract
+	test_launch_worker_forwards_github_login
 	test_create_worktree_uses_target_repo_path
+	test_create_worktree_registers_dispatch_owner
+	test_create_worktree_registration_warns_on_failure
+	test_readiness_accepts_worker_started_marker
+	test_readiness_rejects_live_child_without_ready_signal
+	test_readiness_rejects_ledger_without_worker_started
+	test_launch_report_waits_before_success_message
 	test_live_dispatch_detects_issue_repo
 	test_guard_blocks_ledger_duplicate
 	test_guard_blocks_live_worktree_duplicate

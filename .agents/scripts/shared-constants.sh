@@ -113,6 +113,134 @@ fi
 # Upstream context: https://github.com/anomalyco/opencode/issues/21215
 readonly OPENCODE_PINNED_VERSION="latest"
 
+# Minimum GitHub CLI version required for `gh api --paginate --slurp`.
+# Older distro packages can parse `gh` as installed while dispatch paths fail
+# closed with `unknown flag: --slurp`.
+readonly AIDEVOPS_GH_MIN_SLURP_VERSION="2.51.0"
+
+aidevops_parse_semver() {
+	local input="$1"
+	local parsed=""
+	parsed=$(printf '%s\n' "$input" | grep -Eo '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true)
+	if [[ -z "$parsed" ]]; then
+		return 1
+	fi
+	if [[ "$parsed" =~ ^[0-9]+\.[0-9]+$ ]]; then
+		parsed="${parsed}.0"
+	fi
+	printf '%s\n' "$parsed"
+	return 0
+}
+
+aidevops_version_at_least() {
+	local current="$1"
+	local minimum="$2"
+	local current_major current_minor current_patch
+	local minimum_major minimum_minor minimum_patch
+	IFS='.' read -r current_major current_minor current_patch <<<"$current"
+	IFS='.' read -r minimum_major minimum_minor minimum_patch <<<"$minimum"
+	current_major="${current_major:-0}"
+	current_minor="${current_minor:-0}"
+	current_patch="${current_patch:-0}"
+	minimum_major="${minimum_major:-0}"
+	minimum_minor="${minimum_minor:-0}"
+	minimum_patch="${minimum_patch:-0}"
+	[[ "$current_major$current_minor$current_patch$minimum_major$minimum_minor$minimum_patch" =~ ^[0-9]+$ ]] || return 1
+	if ((current_major > minimum_major)); then
+		return 0
+	fi
+	if ((current_major < minimum_major)); then
+		return 1
+	fi
+	if ((current_minor > minimum_minor)); then
+		return 0
+	fi
+	if ((current_minor < minimum_minor)); then
+		return 1
+	fi
+	if ((current_patch >= minimum_patch)); then
+		return 0
+	fi
+	return 1
+}
+
+aidevops_gh_installed_version() {
+	local output=""
+	if ! command -v gh >/dev/null 2>&1; then
+		return 1
+	fi
+	output=$(gh --version 2>/dev/null || true)
+	aidevops_parse_semver "$output"
+	return $?
+}
+
+aidevops_gh_slurp_supported() {
+	local installed=""
+	installed=$(aidevops_gh_installed_version) || return 1
+	aidevops_version_at_least "$installed" "$AIDEVOPS_GH_MIN_SLURP_VERSION"
+	return $?
+}
+
+aidevops_gh_slurp_status_message() {
+	local installed=""
+	if ! command -v gh >/dev/null 2>&1; then
+		printf 'GitHub CLI (gh) is not installed; gh api --paginate --slurp requires gh >= %s. %s' \
+			"$AIDEVOPS_GH_MIN_SLURP_VERSION" "$(aidevops_gh_slurp_remediation_guidance)"
+		return 0
+	fi
+	installed=$(aidevops_gh_installed_version) || installed="unknown"
+	if [[ "$installed" == "unknown" ]]; then
+		printf 'GitHub CLI (gh) version could not be parsed; gh api --paginate --slurp requires gh >= %s; gh --version output is malformed or empty. %s' \
+			"$AIDEVOPS_GH_MIN_SLURP_VERSION" "$(aidevops_gh_slurp_remediation_guidance "$installed")"
+		return 0
+	fi
+	if aidevops_version_at_least "$installed" "$AIDEVOPS_GH_MIN_SLURP_VERSION"; then
+		printf 'GitHub CLI (gh) detected version %s supports gh api --paginate --slurp (minimum required %s)' \
+			"$installed" "$AIDEVOPS_GH_MIN_SLURP_VERSION"
+		return 0
+	fi
+	printf 'GitHub CLI (gh) detected version %s is too old; gh api --paginate --slurp requires gh >= %s. %s' \
+		"$installed" "$AIDEVOPS_GH_MIN_SLURP_VERSION" "$(aidevops_gh_slurp_remediation_guidance "$installed")"
+	return 0
+}
+
+aidevops_gh_slurp_remediation_guidance() {
+	local installed="${1:-}"
+	if [[ "$installed" == "unknown" ]]; then
+		printf 'On Ubuntu/Debian, fix or upgrade the existing gh installation from the official GitHub CLI package repository rather than the Ubuntu universe package, then rerun aidevops status.'
+	elif [[ -n "$installed" ]]; then
+		printf 'On Ubuntu/Debian, avoid apt-pinned Ubuntu universe gh packages such as %s; install or upgrade from the official GitHub CLI package repository, then rerun aidevops status.' \
+			"$installed"
+	else
+		printf 'On Ubuntu/Debian, use the official GitHub CLI package repository rather than the Ubuntu universe package, then rerun aidevops status.'
+	fi
+	return 0
+}
+
+aidevops_gh_slurp_remediation_hint() {
+	local os_name=""
+	os_name=$(uname -s 2>/dev/null || printf 'unknown')
+	case "$os_name" in
+	Linux)
+		printf 'Run aidevops setup to upgrade gh, or install GitHub CLI from the official package source for your distribution.'
+		;;
+	Darwin)
+		printf 'Run brew update && brew upgrade gh, then rerun aidevops status.'
+		;;
+	*)
+		printf 'Upgrade gh to >= %s, then rerun aidevops status.' "$AIDEVOPS_GH_MIN_SLURP_VERSION"
+		;;
+	esac
+	return 0
+}
+
+aidevops_gh_slurp_warning_line() {
+	local status_message=""
+	status_message=$(aidevops_gh_slurp_status_message)
+	printf '[WARN] GitHub CLI prerequisite: %s' "$status_message"
+	return 0
+}
+
 # =============================================================================
 # HTTP and API Constants
 # =============================================================================
@@ -920,13 +1048,20 @@ push_cleanup() {
 # This is the RETURN trap handler — do not call directly.
 _run_cleanups() {
 	if [[ -n "$_CLEANUP_CMDS" ]]; then
-		# Reverse the command list (LIFO) and execute each
+		# Reverse the command list (LIFO) without an external pipeline. Using
+		# echo | tail -r/tac can emit Broken pipe noise under pipefail when the
+		# consumer exits early.
 		local reversed
-		# tail -r is macOS, tac is GNU — try both
-		reversed=$(echo "$_CLEANUP_CMDS" | tail -r 2>/dev/null) ||
-			reversed=$(echo "$_CLEANUP_CMDS" | tac 2>/dev/null) ||
-			reversed="$_CLEANUP_CMDS"
+		reversed=""
 		local line
+		while IFS= read -r line; do
+			[[ -z "$line" ]] && continue
+			if [[ -n "$reversed" ]]; then
+				reversed="${line}"$'\n'"${reversed}"
+			else
+				reversed="$line"
+			fi
+		done <<<"$_CLEANUP_CMDS"
 		while IFS= read -r line; do
 			[[ -z "$line" ]] && continue
 			bash -c "$line" 2>/dev/null || true

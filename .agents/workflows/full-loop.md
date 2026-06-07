@@ -11,7 +11,7 @@ Task/Prompt: $ARGUMENTS
 
 ## Lifecycle Gate (t5096 + GH#5317 — MANDATORY)
 
-`Claim → Branch → Develop → Preflight → PR → Review → Merge → Release → Close → Cleanup`
+`Claim → Worktree → Develop → Preflight → PR → Review → Merge → Release → Close → Cleanup`
 
 Fatal modes: **GH#5317** (exits without PR), **GH#5096** (exits after PR). Do NOT skip any step:
 
@@ -35,7 +35,7 @@ Extract first positional arg; if ` -- ` present, use suffix (t158). Resolve `t\d
 **Implementation context (t1901):** Read issue body's "Worker Guidance"/"How" section first. When present, follow file paths, implementation steps, and verification commands directly. When absent or incomplete, do not stop by default: do bounded discovery from the issue title/body, search exact error terms, inspect likely target files, and proceed if the problem is actionable. Exit `BLOCKED` for "missing implementation context" only when the issue is too vague to identify expected behavior, target area, or safe verification after bounded discovery. Headless runtime treats that exact blocker as recoverable once: it resumes the session with a brief-recovery prompt to improve the linked issue body and retry before recording `BLOCKED`.
 
 - **Interactive claim (t2056 — STRUCTURAL):** `full-loop-helper.sh start` automatically calls `interactive-session-helper.sh claim` for non-headless sessions when an issue number is present in the prompt. The helper first verifies maintainer-equivalent repo access; managed repos get `status:in-review` + self-assignment + a claim comment to block pulse dispatch, while external upstream repos skip claim/label/comment routines and should use the normal PR contribution flow.
-- **Maintainer gate pre-check (GH#17810/GH#22854 — MANDATORY):** Verify issue lacks `needs-maintainer-review`. Headless workers must also verify the issue has an assignee. OWNER/MEMBER interactive sessions on managed repos treat a missing assignee as actionable state: `full-loop-helper.sh start` claims/self-assigns the open issue and continues. External upstream repos do not use the maintainer gate/claim routine. Exit BLOCKED only for the enforced gate in the current mode.
+- **Maintainer gate pre-check (GH#17810/GH#22854 — MANDATORY):** Verify issue is not blocked by `hold-for-review` or structural dispatch blockers. `needs-maintainer-review` remains a non-maintainer trust gate: headless workers block on it, while OWNER/MEMBER interactive sessions may continue only when the issue author and all comments are maintainer-only. Headless workers must also verify the issue has an assignee. OWNER/MEMBER interactive sessions on managed repos treat a missing assignee as actionable state: `full-loop-helper.sh start` claims/self-assigns the open issue and continues. External upstream repos do not use the maintainer gate/claim routine. Exit BLOCKED only for the enforced gate in the current mode.
 - **Decomposition (t1408.2):** Skip if `--no-decompose` or has subtasks. `task-decompose-helper.sh classify "$TASK_DESC"`. Composite headless → auto-decompose, exit `DECOMPOSED: ...`. Max depth 3.
 - **Claim (t1017):** Add `assignee:<identity> started:<ISO>` to TODO.md. Push rejection = claimed → **STOP**.
 - **Issue labels (t1343/#2452):** Guard: state must be `OPEN`. Set `status:in-progress`, remove stale labels. Lifecycle: `available` → `queued` → `in-progress` → `in-review` → `done`. Idempotent (t1687).
@@ -44,13 +44,13 @@ Extract first positional arg; if ` -- ` present, use suffix (t158). Resolve `t\d
 
 ---
 
-## Step 1: Auto-Branch Setup
+## Step 1: Auto-Worktree Setup
 
 ```bash
 ~/.aidevops/agents/scripts/pre-edit-check.sh --loop-mode --task "$ARGUMENTS"
 ```
 
-Exit 0: already on feature branch. Exit 2: on main → auto-create worktree.
+Exit 0: already in a safe linked worktree or approved pre-created worker worktree. Exit 2: canonical `main` checkout → create a safe linked worktree for the task before editing.
 
 **Operation Verification (t1364.3):** `verify-operation-helper.sh check/verify`. Critical/high → block or verify.
 
@@ -128,15 +128,27 @@ Handles: `git add -A`, commit, `git rebase origin/main`, `git push -u`, `gh pr c
 
 **4.2.1 Merge Summary Comment (MANDATORY):** `commit-and-pr` posts automatically. Manual PRs — post immediately after PR creation:
 
+Create and sign the merge-summary body in one Bash tool call, then post it with
+`--body-file` in a later Bash tool call; same-command body-file creation is
+blocked by the signature gate.
+
 ```bash
-gh pr comment "$PR_NUMBER" --repo "$REPO" --body "<!-- MERGE_SUMMARY -->
+MERGE_SUMMARY_FILE=/tmp/aidevops-merge-summary.md
+cat <<'EOF' > "$MERGE_SUMMARY_FILE"
+<!-- MERGE_SUMMARY -->
 ## Completion Summary
 
 - **What**: <1-line description of what was done>
 - **Issue**: #<issue_number>
 - **Files changed**: <comma-separated list of key files>
 - **Testing**: <what was verified — linter, build, manual, etc.>
-- **Key decisions**: <any notable trade-offs or choices made>"
+- **Key decisions**: <any notable trade-offs or choices made>
+EOF
+~/.aidevops/agents/scripts/gh-signature-helper.sh footer >> "$MERGE_SUMMARY_FILE"
+```
+
+```bash
+gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/aidevops-merge-summary.md
 ```
 
 Verify it posted: `gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --jq '[.[] | select(.body | test("MERGE_SUMMARY"))] | length'` must return `1`.

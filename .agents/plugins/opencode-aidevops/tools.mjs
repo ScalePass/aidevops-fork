@@ -7,6 +7,7 @@ try {
   ({ tool } = await import("@opencode-ai/plugin"));
 } catch {
   const schemaNode = {
+    _zod: {},
     optional() {
       return this;
     },
@@ -20,6 +21,9 @@ try {
       return schemaNode;
     },
     string() {
+      return schemaNode;
+    },
+    number() {
       return schemaNode;
     },
     union() {
@@ -53,14 +57,41 @@ function isSafeCommand(command) {
 }
 
 /**
+ * Validate memory tool arguments before invoking the shell helper.
+ * @param {object} args
+ * @returns {string}
+ */
+function getMemoryArgsError(args) {
+  const action = String(args.action || "recall");
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  const content = typeof args.content === "string" ? args.content.trim() : "";
+  let error = "";
+
+  if (!args.action && !query && !content) {
+    error = 'Error: aidevops_memory requires a complete payload. Use {action:"recall", query:"<keywords>", limit:"5"} or {action:"store", content:"<lesson>", confidence:"medium"}; do not use empty calls as placeholders.';
+  } else if (action === "recall" && !query) {
+    error = 'Error: query is required for memory recall. Use {action:"recall", query:"<keywords>", limit:"5"}.';
+  } else if (action === "store" && !content) {
+    error = 'Error: content is required to store a memory. Use {action:"store", content:"<lesson>", confidence:"medium"}; do not store placeholders.';
+  } else if (action !== "recall" && action !== "store") {
+    error = `Unknown action: ${action}. Use "recall" or "store".`;
+  }
+
+  return error;
+}
+
+/**
  * Create the aidevops CLI tool.
  * @param {function} run - Shell command runner
  * @returns {object} Tool definition
  */
 function createAidevopsTool(run) {
-  return {
+  return tool({
     description:
       'Run aidevops CLI commands (status, repos, features, secret, etc.). Pass command as string e.g. "status", "repos", "features"',
+    args: {
+      command: z.string().describe('aidevops command and arguments, e.g. "status" or "repos"'),
+    },
     async execute(args) {
       const rawCmd = String(args.command || args);
       if (!isSafeCommand(rawCmd)) {
@@ -70,7 +101,7 @@ function createAidevopsTool(run) {
       const result = run(cmd, 15000);
       return result || `Command completed: ${cmd}`;
     },
-  };
+  });
 }
 
 /**
@@ -88,9 +119,10 @@ function createMemoryTool(scriptsDir, run) {
   return tool({
     description:
       'Recall or store memories in the aidevops cross-session memory system. ' +
-      'Args: action ("recall"|"store"), query (string, for recall), ' +
+      'Args: action ("recall"|"store"), query (non-empty string, for recall), ' +
       'limit (string, default "5", for recall), ' +
-      'content (string, for store), confidence ("low"|"medium"|"high", default "medium", for store)',
+      'content (non-empty string, for store), confidence ("low"|"medium"|"high", default "medium", for store). ' +
+      'Do not call with an empty payload; use {action:"recall",query:"...",limit:"5"} or {action:"store",content:"...",confidence:"medium"}.',
     args: {
       action: z.enum(["recall", "store"]).optional().describe('Memory operation to perform; defaults to "recall"'),
       query: z.string().optional().describe("Search query for memory recall"),
@@ -99,33 +131,36 @@ function createMemoryTool(scriptsDir, run) {
       confidence: z.enum(["low", "medium", "high"]).optional().describe('Stored memory confidence; defaults to "medium"'),
     },
     async execute(args) {
+      args = args && typeof args === "object" ? args : {};
       const memoryHelper = join(scriptsDir, "memory-helper.sh");
       if (!existsSync(memoryHelper)) {
         return "Memory system not available (memory-helper.sh not found)";
       }
 
+      const validationError = getMemoryArgsError(args);
+      if (validationError) {
+        return validationError;
+      }
+
       const action = String(args.action || "recall");
 
       if (action === "recall") {
-        const query = args.query || "";
-        const limit = args.limit === undefined ? "5" : String(args.limit);
+        const query = args.query.trim();
+        const limit = String(args.limit ?? "").trim() || "5";
         const cmd = `bash "${memoryHelper}" recall ${shellEscape(query)} --limit ${shellEscape(limit)}`;
         const result = run(cmd, 10000);
         return result || "No memories found for this query.";
       }
 
       if (action === "store") {
-        const content = typeof args.content === "string" ? args.content.trim() : "";
-        if (!content) {
-          return "Error: content is required to store a memory";
-        }
+        const content = args.content.trim();
         const confidence = args.confidence || "medium";
         const cmd = `bash "${memoryHelper}" store ${shellEscape(content)} --confidence ${shellEscape(confidence)}`;
         const result = run(cmd, 10000);
         return result || "Memory stored successfully.";
       }
 
-      return `Unknown action: ${action}. Use "recall" or "store".`;
+      return validationError;
     },
   });
 }
@@ -142,10 +177,14 @@ function createPreEditCheckTool(scriptsDir) {
     3: "WARNING — proceed with caution.",
   };
 
-  return {
+  return tool({
     description:
       'Run the pre-edit git safety check before modifying files. Returns exit code and guidance. Args: task (optional string for loop mode)',
+    args: {
+      task: z.string().optional().describe('Optional task description for loop-mode worktree guidance'),
+    },
     async execute(args) {
+      args = args && typeof args === "object" ? args : {};
       const script = join(scriptsDir, "pre-edit-check.sh");
       if (!existsSync(script)) {
         return "pre-edit-check.sh not found — cannot verify git safety";
@@ -166,7 +205,7 @@ function createPreEditCheckTool(scriptsDir) {
         return `Pre-edit check exit ${code}: ${PRE_EDIT_GUIDANCE[code] || "Unknown"}\n${cmdOutput.trim()}`;
       }
     },
-  };
+  });
 }
 
 /**

@@ -19,13 +19,19 @@ git add -A && git commit -m 'feat: <what you just did> (<task-id>)'
 ```bash
 git push -u origin HEAD
 gh_issue=$(grep -E '^\s*- \[.\] <task-id> ' TODO.md 2>/dev/null | grep -oE 'ref:GH#[0-9]+' | head -1 | sed 's/ref:GH#//' || true)
-pr_body='WIP - incremental commits'
-[[ -n "$gh_issue" ]] && pr_body="${pr_body}
+PR_BODY_FILE=/tmp/aidevops-pr-body.md
+cat <<'EOF' > "$PR_BODY_FILE"
+WIP - incremental commits
+EOF
+[[ -n "$gh_issue" ]] && printf '\nResolves #%s\n' "$gh_issue" >> "$PR_BODY_FILE"
+~/.aidevops/agents/scripts/gh-signature-helper.sh footer --model "$ANTHROPIC_MODEL" >> "$PR_BODY_FILE"
+```
 
-Resolves #${gh_issue}"
-SIG_FOOTER=$(~/.aidevops/agents/scripts/gh-signature-helper.sh footer --model "$ANTHROPIC_MODEL" 2>/dev/null || echo "")
-pr_body="${pr_body}${SIG_FOOTER}"
-gh pr create --draft --title '<task-id>: <description>' --body "$pr_body"
+Run the GitHub write in the next Bash tool call so the signature gate can read
+the completed body file before execution:
+
+```bash
+gh pr create --draft --title '<task-id>: <description>' --body-file /tmp/aidevops-pr-body.md
 ```
 
 - **ShellCheck before push for `.sh` files (t234).** Do not push violations. If `shellcheck` is missing, skip and note it in the PR body.
@@ -68,7 +74,7 @@ ai_research(prompt: "Find all functions that dispatch workers in pulse-wrapper.s
 - Replan when stuck. Do not patch a broken path incrementally.
 - **Skip signature footers** when reading GH issue/PR threads. Content after `<!-- aidevops:sig -->` or `---` followed by `[aidevops.sh]` is operational telemetry (version, tokens, timing) — not task-relevant. Never visit URLs in signature footers (aidevops.sh, opencode.ai). See `AGENTS.md` "Signature footer skip when reading".
 - **Skip provenance metadata** in quality-debt issues. Content inside `<!-- provenance:start/end -->` markers (Source PR, Reviewers, View comment links, generating script) records origin — not implementation guidance. Read only the file:line targets and code blocks. See `AGENTS.md` "Provenance metadata skip when reading".
-- **Skip bot comment noise** on PR threads. CodeRabbit internal state (`<!-- internal state start/end -->`), review-skipped notices, quota warnings, SonarCloud/Codacy badge summaries — none are actionable. Extract only specific file:line findings from bot reviews. Use `gh pr checks` for pass/fail. See `AGENTS.md` "Bot comment noise skip when reading".
+- **Skip bot comment noise** on PR threads. CodeRabbit internal state (`<!-- internal state start/end -->`), review-skipped notices, quota warnings, SonarCloud/Codacy badge summaries, and Augment PR summary blocks (`<!-- augment-pr-summary -->`) — none are actionable. Extract only specific file:line findings from bot reviews. Use `gh pr checks` for pass/fail. See `reference/gh-command-discipline.md` "Bot comment noise skip when reading".
 - **Skip operational comments** on issue threads. Dispatch claims (`<!-- ops:start/end -->`), worker PIDs, kill notifications, approval instructions — these are audit trail, not implementation context. See `AGENTS.md` "Operational comment skip when reading".
 
 ## 4. Model escalation before BLOCKED (GH#14964 — MANDATORY)

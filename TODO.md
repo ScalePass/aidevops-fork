@@ -1,5 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
 <!-- SPDX-FileCopyrightText: 2025-2026 Marcus Quinn -->
+<!-- markdownlint-disable-file -->
 
 # TODO
 
@@ -107,7 +108,15 @@ Tasks with no open blockers - ready to work on. Use `/ready` to refresh this lis
 <!--TOON:ready[0]{id,desc,owner,tags,est,logged}:
 -->
 
+- [ ] t3593 fix(pulse-auth): route collaborator permission checks through GitHub App-aware REST auth and preserve API-failure vs confirmed-non-collaborator semantics. Primary path: `.agents/scripts/pulse-merge-author-checks.sh` direct permission probes currently collapse API errors into "not collaborator" logs in `.agents/scripts/pulse-merge.sh`; audit related probes in interactive/NMR/quality-feedback/simplification/repo-state helpers and update tests for App success, PAT fallback, 404/non-collab, and 403/429/API failure. #bug #framework #pulse #auto-dispatch ~4h tier:standard ref:GH#24494 logged:2026-06-06 -> [todo/tasks/t3593-brief.md]
+
+- [x] t17994 fix systemd worker PID handoff fallback race — when `systemd-run --user` succeeds but the child pid-file is not populated in time, poll `systemctl --user show <unit>` for a live `MainPID` before allowing setsid/nohup fallback. Add regression coverage in `tests/test-systemd-worker-service-launch.sh` for missing pid-file + resolved MainPID and failed unit fallback. #bug #framework #interactive #priority:high ~2h tier:thinking ref:GH#23524 logged:2026-05-14 -> [todo/tasks/t17994-brief.md] pr:#23536 completed:2026-05-14
+
 - [ ] t2988 [P0] t2984 REGRESSION: reconcile_issues_single_pass hangs after first run, blocks deterministic_merge_pass — stage runs once successfully (4s, lia_fixed=3) then hangs every subsequent invocation, parent preflight_ownership_reconcile times out at 600s. Stats since 13:53Z deploy: 63 starts, 4 completions, 26 parent timeouts (94% failure rate). Root-cause likely budget/lock state leaking across invocations in `pulse-issue-reconcile.sh` `_t2984_budget` markers. Fix: ensure budget state initialised at function entry, not module-source; release locks on early-exit. Add `tests/test-reconcile-budget-isolation.sh` for double-call regression coverage. Postmortem comment on PR #21374. #bug #framework #auto-dispatch #worker #priority:high ~3h tier:standard ref:GH#21380 logged:2026-04-27
+
+- [x] t3590 fix(phase-filing): skip closed parent auto-file — `auto_file_next_phase()` currently reads parent `body`/`title` only, so closed or superseded parent-task issues with armed `[auto-fire:on-prior-merge]` markers can still file duplicate next-phase children after descendant PR merges. Extend the existing parent API projection to include `.state`, return early unless it is `open`, and cover closed-parent skip plus open-parent preservation in `.agents/scripts/tests/test-shared-phase-filing.sh`. #bug #framework #auto-dispatch #worker ~45m tier:simple ref:GH#23526 logged:2026-05-14 -> [todo/tasks/t3590-brief.md] pr:#23537 completed:2026-05-14
+
+- [x] t3589 fix(worker-origin): propagate canonical headless worker identity through sandboxed OpenCode launch — pulse sets legacy `HEADLESS`/`FULL_LOOP_HEADLESS` markers, but sandbox `env -i` strips them before signature and PR wrapper helpers run, causing worker PRs to look interactive and default to draft. Set `AIDEVOPS_SESSION_ORIGIN=worker` and `AIDEVOPS_HEADLESS=true` at worker launch/runtime boundaries, make signature detection trust the canonical origin, and add regression tests for sandbox passthrough, footer wording, and draft policy. #bug #framework #auto-dispatch #worker ~3h tier:standard ref:GH#23520 logged:2026-05-14 -> [todo/tasks/t3589-brief.md] pr:#23532 completed:2026-05-14
 
 - [x] t3417 support glob-compressed subagent allowlists for OpenCode `permission.task` generation — OpenCode 1.14.31 evaluates Task-tool subagent visibility through `Permission.evaluate("task", item.name, agent.permission)`, which uses `Wildcard.match()` on allow/deny patterns. Verified locally that `{ "*": "deny", "git*": "allow" }` allows both `github-cli` and `gitlab-cli` while denying unrelated agents. Fix aidevops validator first so glob entries in primary-agent `subagents:` frontmatter only pass when they match reviewed flattened task names (not path-style globs), then compress Automate's `github-cli` + `gitlab-cli` pair to `git*`, document the pattern in `.agents/AGENTS.md`, and add regression coverage. #enhancement #framework #interactive ~45m tier:standard ref:GH#22251 logged:2026-05-01 pr:#22252 completed:2026-05-01
 
@@ -960,6 +969,8 @@ t193,setup.sh fails in non-interactive supervisor deploy step,,bugfix|setup,1h,4
 - [x] t3583 Improve pulse recovery for orphaned worker output ref:GH#23217 pr:#23218 completed:2026-05-08
 
 - [x] t3584 fix: recover worker output after runtime kills #auto-dispatch #bug ref:GH#23224 pr:#23223 completed:2026-05-08
+
+- [x] t3588 offer gh upgrade and OpenCode prerequisite toast — follow-up to GH#23427/#23428: setup offers an explicit Linux gh upgrade/remediation path when `gh <2.51.0`, `aidevops update` and session-start update checks warn, and OpenCode greeting toast escalates the prerequisite warning. #bug #framework #no-auto-dispatch ~1h tier:standard ref:GH#23435 source:GH#23427 started:2026-05-12 pr:#23440 completed:2026-05-12
 
 ## In Progress
 
@@ -4219,3 +4230,9 @@ t019.3.4,Update AGENTS.md with Beads integration docs,,beads,1h,45m,2025-12-21T1
 
 
 - [ ] t3585 Capture session learning guidance in aidevops harness #documentation #self-improvement ref:GH#23285
+
+- [ ] t3587 fix gh CLI slurp prerequisite diagnostics #auto-dispatch #bug #framework ref:GH#23428
+
+- [x] t3591 Bound person-stats GitHub calls with portable timeouts #auto-dispatch #bug #reliability #shell ref:GH#23761 pr:#23764 completed:2026-05-18
+
+- [ ] t3592 Add report-token-use session token reporting #bug ref:GH#24221

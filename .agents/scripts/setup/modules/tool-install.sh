@@ -11,17 +11,73 @@ IFS=$'\n\t'
 trap 'rc=$?; echo "[ERROR] ${BASH_SOURCE[0]}:${LINENO} exit $rc" >&2' ERR
 shopt -s inherit_errexit 2>/dev/null || true
 
+_print_gh_slurp_manual_upgrade() {
+	echo ""
+	echo "📋 GitHub CLI upgrade guidance:"
+	echo "  Required: gh >= ${AIDEVOPS_GH_MIN_SLURP_VERSION:-2.51.0} for gh api --paginate --slurp"
+	echo "  Linux: install or upgrade gh from the official GitHub CLI package source for your distribution; on Ubuntu/Debian avoid the older Ubuntu universe gh package"
+	echo "  macOS: brew update && brew upgrade gh"
+	echo "  Verify: gh --version && aidevops status"
+	return 0
+}
+
+_offer_gh_slurp_upgrade() {
+	local pkg_manager="$1"
+	local os_name=""
+	os_name=$(uname -s 2>/dev/null || printf 'unknown')
+
+	if [[ "$os_name" != "Linux" ]]; then
+		_print_gh_slurp_manual_upgrade
+		return 1
+	fi
+
+	echo ""
+	print_warning "Linux GitHub CLI is below the aidevops minimum. Old distro packages can break pulse dispatch."
+	if [[ "$pkg_manager" == "unknown" ]]; then
+		print_warning "No supported package manager detected for an automatic gh upgrade attempt"
+		_print_gh_slurp_manual_upgrade
+		return 1
+	fi
+	setup_prompt upgrade_gh_cli "Try to upgrade GitHub CLI (gh) using ${pkg_manager}? [y/N]: " "N"
+	# shellcheck disable=SC2154  # set indirectly by setup_prompt via read
+	if [[ "$upgrade_gh_cli" =~ ^[Yy]$ ]]; then
+		print_info "Attempting to upgrade gh using ${pkg_manager}..."
+		if install_packages "$pkg_manager" gh; then
+			if declare -F aidevops_gh_slurp_supported >/dev/null 2>&1 && aidevops_gh_slurp_supported; then
+				print_success "GitHub CLI now satisfies the aidevops prerequisite"
+				return 0
+			else
+				print_warning "gh still does not satisfy the aidevops prerequisite after package-manager upgrade"
+				_print_gh_slurp_manual_upgrade
+			fi
+		else
+			print_warning "Package-manager gh upgrade failed or was unavailable"
+			_print_gh_slurp_manual_upgrade
+		fi
+	else
+		print_info "Skipped GitHub CLI upgrade"
+		_print_gh_slurp_manual_upgrade
+	fi
+	return 1
+}
+
 setup_git_clis() {
 	print_info "Setting up Git CLI tools..."
 
 	local cli_tools=()
 	local missing_packages=()
 	local missing_names=()
+	local gh_needs_slurp_upgrade="false"
 
 	# Check for GitHub CLI
 	if ! command -v gh >/dev/null 2>&1; then
 		missing_packages+=("gh")
 		missing_names+=("GitHub CLI")
+	elif declare -F aidevops_gh_slurp_supported >/dev/null 2>&1 && ! aidevops_gh_slurp_supported; then
+		local gh_slurp_message
+		gh_slurp_message=$(aidevops_gh_slurp_status_message)
+		print_warning "$gh_slurp_message"
+		gh_needs_slurp_upgrade="true"
 	else
 		cli_tools+=("GitHub CLI")
 	fi
@@ -39,13 +95,19 @@ setup_git_clis() {
 		print_success "Found Git CLI tools: ${cli_tools[*]}"
 	fi
 
+	local pkg_manager
+	pkg_manager=$(detect_package_manager)
+
+	if [[ "$gh_needs_slurp_upgrade" == "true" ]]; then
+		if _offer_gh_slurp_upgrade "$pkg_manager"; then
+			gh_needs_slurp_upgrade="false"
+		fi
+	fi
+
 	# Offer to install missing tools
 	if [[ ${#missing_packages[@]} -gt 0 ]]; then
 		print_warning "Missing Git CLI tools: ${missing_names[*]}"
 		echo "  These provide enhanced Git platform integration (repos, PRs, issues)"
-
-		local pkg_manager
-		pkg_manager=$(detect_package_manager)
 
 		if [[ "$pkg_manager" != "unknown" ]]; then
 			echo ""
@@ -72,17 +134,17 @@ setup_git_clis() {
 				echo ""
 				echo "📋 Manual installation:"
 				echo "  macOS: brew install ${missing_packages[*]}"
-				echo "  Ubuntu: sudo apt install ${missing_packages[*]}"
+				echo "  Ubuntu: sudo apt install ${missing_packages[*]} (Note: for gh >= 2.51.0, use the GitHub CLI apt repository)"
 				echo "  Fedora: sudo dnf install ${missing_packages[*]}"
 			fi
 		else
 			echo ""
 			echo "📋 Manual installation:"
 			echo "  macOS: brew install ${missing_packages[*]}"
-			echo "  Ubuntu: sudo apt install ${missing_packages[*]}"
+			echo "  Ubuntu: sudo apt install ${missing_packages[*]} (Note: for gh >= 2.51.0, use the GitHub CLI apt repository)"
 			echo "  Fedora: sudo dnf install ${missing_packages[*]}"
 		fi
-	else
+	elif [[ "$gh_needs_slurp_upgrade" != "true" ]]; then
 		print_success "All Git CLI tools installed and ready!"
 	fi
 
@@ -251,6 +313,61 @@ setup_file_discovery_tools() {
 	return 0
 }
 
+_setup_rtk_installed_version() {
+	local rtk_version="unknown"
+	rtk_version=$(rtk --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || printf 'unknown')
+	printf '%s\n' "$rtk_version"
+	return 0
+}
+
+_setup_rtk_install_supported_version() {
+	local rtk_installer_url="$1"
+	local rtk_supported_version="$2"
+	VERIFIED_INSTALL_SHELL="sh"
+
+	if command -v brew >/dev/null 2>&1; then
+		if run_with_spinner "Upgrading rtk via Homebrew" brew upgrade rtk; then
+			print_success "rtk upgraded via Homebrew"
+			return 0
+		fi
+		print_warning "Homebrew upgrade failed, trying pinned installer..."
+	fi
+
+	if verified_install "rtk" "$rtk_installer_url"; then
+		print_success "rtk installed to ~/.local/bin/rtk (v${rtk_supported_version})"
+		return 0
+	fi
+
+	print_warning "rtk upgrade failed (non-critical, optional tool)"
+	_setup_rtk_print_manual_install "$rtk_installer_url" "upgrade"
+	return 1
+}
+
+_setup_rtk_print_manual_install() {
+	local rtk_installer_url="$1"
+	local brew_cmd="${2:-upgrade}"
+	echo "  Manual install: brew $brew_cmd rtk  OR  curl -fsSL $rtk_installer_url | sh"
+	return 0
+}
+
+_setup_rtk_offer_supported_upgrade() {
+	local rtk_version="$1"
+	local rtk_supported_version="$2"
+	local rtk_installer_url="$3"
+
+	print_warning "rtk version mismatch: found v${rtk_version}, aidevops supports v${rtk_supported_version}"
+	setup_prompt upgrade_rtk "Upgrade rtk to the aidevops-tested v${rtk_supported_version}? [Y/n]: " "Y"
+	# shellcheck disable=SC2154  # set indirectly by setup_prompt via read
+	if [[ "$upgrade_rtk" =~ ^[Yy]?$ ]]; then
+		_setup_rtk_install_supported_version "$rtk_installer_url" "$rtk_supported_version"
+		return $?
+	fi
+
+	print_info "Skipped rtk upgrade"
+	_setup_rtk_print_manual_install "$rtk_installer_url"
+	return 1
+}
+
 setup_rtk() {
 	# rtk — CLI proxy that reduces LLM token consumption by 60-90% (t1430)
 	# Opinionated default optimization: compresses git/gh/test outputs before they reach LLM context
@@ -259,16 +376,23 @@ setup_rtk() {
 
 	# Pin to a tagged release for stability and auditability (Gemini review feedback).
 	# Update the tag when upstream-watch detects a new release.
-	local rtk_supported_version="0.39.0"
+	local rtk_supported_version="0.41.0"
 	local rtk_installer_url="https://raw.githubusercontent.com/rtk-ai/rtk/v${rtk_supported_version}/install.sh"
 
 	if command -v rtk >/dev/null 2>&1; then
 		local rtk_version
-		rtk_version=$(rtk --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+		rtk_version=$(_setup_rtk_installed_version)
 		print_success "rtk found: v$rtk_version (token optimization proxy)"
-		if [[ "$rtk_version" != "unknown" && "$rtk_version" != "$rtk_supported_version" ]]; then
-			print_info "rtk supported by this aidevops release: v$rtk_supported_version"
-			print_info "Run 'brew upgrade rtk' or re-run setup if you want the pinned aidevops-tested version."
+		if [[ "$rtk_version" != "$rtk_supported_version" ]]; then
+			if _setup_rtk_offer_supported_upgrade "$rtk_version" "$rtk_supported_version" "$rtk_installer_url"; then
+				rtk_version=$(_setup_rtk_installed_version)
+				if [[ "$rtk_version" == "$rtk_supported_version" ]]; then
+					print_success "rtk now matches the aidevops-tested version"
+				else
+					print_warning "rtk still reports v${rtk_version}; aidevops supports v${rtk_supported_version}"
+					_setup_rtk_print_manual_install "$rtk_installer_url"
+				fi
+			fi
 		fi
 		# Fall through to ensure config is applied (telemetry, tee)
 	else
@@ -304,7 +428,7 @@ setup_rtk() {
 			fi
 		else
 			print_info "Skipped rtk installation"
-			echo "  Manual install: brew install rtk  OR  curl -fsSL $rtk_installer_url | sh"
+			_setup_rtk_print_manual_install "$rtk_installer_url" "install"
 		fi
 	fi
 
@@ -1175,7 +1299,7 @@ setup_claudebar() {
 
 	print_info "ClaudeBar monitors AI coding assistant usage quotas in your menu bar"
 	echo "  Supports: Claude, Codex, Gemini, Copilot, Antigravity, Kimi, Kiro, Amp"
-	echo "  Features: real-time quota tracking, status notifications, multiple themes"
+	echo "  Features: live menu-bar refresh, real-time quota tracking, provider process detection, status notifications, multiple themes"
 	echo "  Requires: macOS 15+, CLI tools for providers you want to monitor"
 	echo ""
 
@@ -1662,6 +1786,54 @@ _setup_opencode_first_line() {
 	return 0
 }
 
+_setup_opencode_homebrew_owner_action() {
+	local bin="${1:-}"
+	local brew_bin=""
+	local brew_prefix=""
+	local bin_real=""
+	local prefix_real=""
+
+	[[ -n "$bin" ]] || return 1
+	command -v brew >/dev/null 2>&1 || return 1
+	brew_bin=$(command -v brew 2>/dev/null || printf '')
+	[[ -n "$brew_bin" ]] || return 1
+	brew_prefix=$(brew --prefix opencode 2>/dev/null || printf '')
+	[[ -n "$brew_prefix" ]] || brew_prefix=$(brew --prefix 2>/dev/null || printf '')
+	[[ -n "$brew_prefix" ]] || return 1
+
+	bin_real=$(cd "$(dirname "$bin")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$bin")") || return 1
+	prefix_real=$(cd "$brew_prefix" 2>/dev/null && pwd -P) || return 1
+
+	case "$bin_real" in
+		"$prefix_real"/*)
+			printf '%s\n' "brew reinstall opencode"
+			return 0
+			;;
+	esac
+
+	return 1
+}
+
+_setup_opencode_print_manual_install_hint() {
+	local installer="${1:-}"
+	local install_pkg="${2:-opencode-ai@latest}"
+	local current_bin="${3:-}"
+	local brew_action=""
+	local manual_cmd=""
+
+	if brew_action=$(_setup_opencode_homebrew_owner_action "$current_bin" 2>/dev/null); then
+		print_info "OpenCode appears to be managed by Homebrew; try manually: $brew_action"
+		return 0
+	fi
+
+	case "$installer" in
+		bun) manual_cmd="bun install -g $install_pkg" ;;
+		npm | *) manual_cmd="npm install -g $install_pkg" ;;
+	esac
+	print_info "Try manually: $manual_cmd"
+	return 0
+}
+
 _setup_opencode_node_path_for_binary() {
 	local bin="$1"
 	local bin_dir=""
@@ -1808,7 +1980,7 @@ _setup_opencode_force_heal() {
 		print_success "OpenCode reinstalled via $installer"
 	else
 		print_warning "Heal install failed via $installer"
-		print_info "Try manually: $installer install -g $install_pkg"
+		_setup_opencode_print_manual_install_hint "$installer" "$install_pkg" "$wrong_bin"
 	fi
 
 	# Re-validate post-heal.
@@ -1925,7 +2097,7 @@ setup_opencode_cli() {
 			echo ""
 		else
 			print_warning "OpenCode installation failed"
-			print_info "Try manually: sudo npm install -g $install_pkg"
+			_setup_opencode_print_manual_install_hint "$installer" "$install_pkg" "$current_bin"
 		fi
 	else
 		print_info "Skipped OpenCode installation"

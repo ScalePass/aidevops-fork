@@ -57,6 +57,8 @@ extract_functions() {
 		/^_setup_opencode_help_output\(\)/, /^}$/ { print; next }
 		/^_setup_opencode_help_identifies_opencode\(\)/, /^}$/ { print; next }
 		/^_setup_opencode_first_line\(\)/, /^}$/ { print; next }
+		/^_setup_opencode_homebrew_owner_action\(\)/, /^}$/ { print; next }
+		/^_setup_opencode_print_manual_install_hint\(\)/, /^}$/ { print; next }
 		/^_setup_opencode_node_path_for_binary\(\)/, /^}$/ { print; next }
 		/^_setup_clear_canary_negative_cache\(\)/, /^}$/ { print; next }
 		/^_setup_ensure_opencode_stable_shim\(\)/, /^}$/ { print; next }
@@ -279,6 +281,33 @@ resolved4=$(tail -1 "$SANDBOX/out4")
 assert_eq "skip-when-valid rc" "rc=0" "$rc4"
 assert_eq "skip-when-valid resolved-path file" "$HOME/.local/bin/opencode" "$resolved4"
 
+# --- Test 4b: setup_opencode_cli accepts valid Homebrew opencode ------------
+echo "Test 4b: setup_opencode_cli accepts valid Homebrew opencode"
+rm -f "$HOME/.aidevops/.opencode-bin-resolved"
+mkdir -p "$SANDBOX/homebrew/bin"
+cp "$SANDBOX/bin/opencode-real" "$SANDBOX/homebrew/bin/opencode"
+(
+	source_extracted
+	export PATH="$SANDBOX/homebrew/bin:$PATH"
+	npm_global_install() {
+		printf '%s\n' "unexpected npm_global_install $*" >&2
+		return 1
+	}
+	export -f npm_global_install 2>/dev/null || true
+	rc=0
+	setup_opencode_cli || rc=$?
+	echo "rc=$rc"
+	cat "$HOME/.aidevops/.opencode-bin-resolved" 2>/dev/null || echo "MISSING"
+) >"$SANDBOX/out4b" 2>&1
+rc4b=$(grep '^rc=' "$SANDBOX/out4b" | tail -1)
+resolved4b=$(tail -1 "$SANDBOX/out4b")
+homebrew_install_invoked=$(grep -c "unexpected npm_global_install" "$SANDBOX/out4b" || true)
+homebrew_sudo_hint=$(grep -c "sudo npm install" "$SANDBOX/out4b" || true)
+assert_eq "valid Homebrew opencode rc" "rc=0" "$rc4b"
+assert_eq "valid Homebrew opencode resolved" "$HOME/.local/bin/opencode" "$resolved4b"
+assert_eq "valid Homebrew opencode avoids installer" "0" "$homebrew_install_invoked"
+assert_eq "valid Homebrew opencode avoids sudo npm hint" "0" "$homebrew_sudo_hint"
+
 # --- Test 5: setup_opencode_cli auto-heal on wrong package -----------------
 # Critical t2891 path: when 'opencode' resolves to claude CLI (rc=1),
 # the function MUST trigger force-heal (calls npm_global_install) and
@@ -360,6 +389,73 @@ if [[ "$elapsed7" =~ ^[0-9]+$ ]] && [[ "$elapsed7" -le 12 ]]; then
 else
 	assert_eq "hanging auto-heal returns within bound" "elapsed<=12" "elapsed=${elapsed7}"
 fi
+
+# --- Test 8: install failure hint matches selected installer -----------------
+echo "Test 8: setup_opencode_cli install failure omits hard-coded sudo npm hint"
+rm -f "$HOME/.aidevops/.opencode-bin-resolved" "$SANDBOX/bin/opencode" "$SANDBOX/bin/bun"
+cat >"$SANDBOX/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$SANDBOX/bin/npm"
+(
+	source_extracted
+	npm_global_install() {
+		printf '%s\n' "installer failed: permission denied" >&2
+		return 1
+	}
+	export -f npm_global_install 2>/dev/null || true
+	export PATH="$SANDBOX/bin:/usr/bin:/bin"
+	rc=0
+	setup_opencode_cli || rc=$?
+	echo "rc=$rc"
+) >"$SANDBOX/out8" 2>&1
+rc8=$(grep '^rc=' "$SANDBOX/out8" | tail -1)
+sudo_hint8=$(grep -c "sudo npm install" "$SANDBOX/out8" || true)
+npm_hint8=$(grep -c "Try manually: npm install -g opencode-ai" "$SANDBOX/out8" || true)
+assert_eq "install failure rc" "rc=0" "$rc8"
+assert_eq "install failure has no sudo npm hint" "0" "$sudo_hint8"
+assert_eq "install failure uses npm hint" "1" "$npm_hint8"
+
+# --- Test 9: Homebrew-owned invalid binary gets brew remediation ------------
+echo "Test 9: setup_opencode_cli failure hint respects Homebrew ownership"
+rm -f "$HOME/.aidevops/.opencode-bin-resolved" "$SANDBOX/bin/opencode"
+mkdir -p "$SANDBOX/homebrew/bin" "$SANDBOX/homebrew/Cellar/opencode/1.0.0/bin"
+cat >"$SANDBOX/homebrew/bin/opencode" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && echo "not-a-version"
+[[ "${1:-}" == "--help" ]] && echo "not opencode"
+exit 0
+EOF
+chmod +x "$SANDBOX/homebrew/bin/opencode"
+cat >"$SANDBOX/bin/brew" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "--prefix" && "\${2:-}" == "opencode" ]]; then
+	printf '%s\n' "$SANDBOX/homebrew"
+	exit 0
+fi
+if [[ "\${1:-}" == "--prefix" ]]; then
+	printf '%s\n' "$SANDBOX/homebrew"
+	exit 0
+fi
+exit 1
+EOF
+chmod +x "$SANDBOX/bin/brew"
+(
+	source_extracted
+	npm_global_install() { return 1; }
+	export -f npm_global_install 2>/dev/null || true
+	export PATH="$SANDBOX/homebrew/bin:$SANDBOX/bin:/usr/bin:/bin"
+	rc=0
+	setup_opencode_cli || rc=$?
+	echo "rc=$rc"
+) >"$SANDBOX/out9" 2>&1
+rc9=$(grep '^rc=' "$SANDBOX/out9" | tail -1)
+brew_hint9=$(grep -c "brew reinstall opencode" "$SANDBOX/out9" || true)
+sudo_hint9=$(grep -c "sudo npm install" "$SANDBOX/out9" || true)
+assert_eq "homebrew remediation rc" "rc=0" "$rc9"
+assert_eq "homebrew remediation uses brew" "1" "$brew_hint9"
+assert_eq "homebrew remediation has no sudo npm hint" "0" "$sudo_hint9"
 
 echo ""
 echo "===== Results: $PASS passed, $FAIL failed ====="

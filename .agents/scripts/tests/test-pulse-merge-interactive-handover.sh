@@ -5,7 +5,7 @@
 # Tests for _interactive_pr_is_stale() and _interactive_pr_trigger_handover()
 # (t2189).
 #
-# An origin:interactive PR that has sat idle past AIDEVOPS_INTERACTIVE_PR_HANDOVER_HOURS
+# An origin:interactive PR that has sat idle past AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS
 # without any active-session signal (no claim stamp, no status:* label on linked
 # issue) must be handover-eligible so the worker pipeline (CI fix, conflict fix,
 # review fix) can drive it to merge. The helpers isolate the staleness signal
@@ -59,12 +59,14 @@ print_result() {
 # produce canned responses; tests mutate them to drive scenarios.
 #   labels.txt            — pr labels (comma-separated, newline-terminated)
 #   updated.txt           — PR updatedAt ISO timestamp
+#   head-commit.txt       — head commit ISO timestamp used for idle age
 #   issue-state.txt       — "open" or "closed"
 #   issue-labels-json.txt — JSON array of label names on linked issue
 #   title.txt             — PR title (used by _extract_linked_issue fallback)
 #   body.txt              — PR body (used by _extract_linked_issue primary)
 reset_mock_state() {
 	: >"$GH_LOG"
+	: >"$LOGFILE"
 	printf 'origin:interactive' >"${TEST_ROOT}/labels.txt"
 	# Default: 48h ago → idle
 	local epoch_48h
@@ -72,8 +74,10 @@ reset_mock_state() {
 	# Portable ISO-8601 UTC emit
 	if date -u -r "$epoch_48h" "+%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
 		date -u -r "$epoch_48h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/updated.txt"
+		date -u -r "$epoch_48h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/head-commit.txt"
 	else
 		date -u -d "@$epoch_48h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/updated.txt"
+		date -u -d "@$epoch_48h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/head-commit.txt"
 	fi
 	printf 'open' >"${TEST_ROOT}/issue-state.txt"
 	printf '[]' >"${TEST_ROOT}/issue-labels-json.txt"
@@ -115,6 +119,11 @@ teardown_test_env() {
 
 # Extract helpers under test and eval them in this shell.
 define_helpers_under_test() {
+	gh_pr_view() {
+		gh pr view "$@"
+		return $?
+	}
+
 	local is_stale_src
 	is_stale_src=$(awk '/^_interactive_pr_is_stale\(\) \{/,/^\}$/ { print }' "$CONFLICT_SCRIPT")
 	if [[ -z "$is_stale_src" ]]; then
@@ -161,8 +170,10 @@ test_A_fresh_pr_returns_not_stale() {
 	epoch_2h=$(( $(date +%s) - 2 * 3600 ))
 	if date -u -r "$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
 		date -u -r "$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/updated.txt"
+		date -u -r "$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/head-commit.txt"
 	else
 		date -u -d "@$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/updated.txt"
+		date -u -d "@$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/head-commit.txt"
 	fi
 	AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE=enforce _interactive_pr_is_stale "100" "owner/repo"
 	local rc=$?
@@ -170,6 +181,27 @@ test_A_fresh_pr_returns_not_stale() {
 		print_result "A: fresh PR (2h old) returns not-stale" 0
 	else
 		print_result "A: fresh PR (2h old) returns not-stale" 1 "Expected 1, got $rc"
+	fi
+	return 0
+}
+
+test_A2_automation_updated_pr_uses_idle_head_commit() {
+	reset_mock_state
+	# Simulate an automated comment/label touching PR updatedAt while the branch
+	# itself has not changed. Handover must key off the head commit age.
+	local epoch_2h
+	epoch_2h=$(( $(date +%s) - 2 * 3600 ))
+	if date -u -r "$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >/dev/null 2>&1; then
+		date -u -r "$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/updated.txt"
+	else
+		date -u -d "@$epoch_2h" "+%Y-%m-%dT%H:%M:%SZ" >"${TEST_ROOT}/updated.txt"
+	fi
+	AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE=enforce _interactive_pr_is_stale "100" "owner/repo"
+	local rc=$?
+	if [[ "$rc" -eq 0 ]]; then
+		print_result "A2: fresh automation updatedAt does not mask idle head commit" 0
+	else
+		print_result "A2: fresh automation updatedAt does not mask idle head commit" 1 "Expected 0, got $rc"
 	fi
 	return 0
 }
@@ -211,6 +243,25 @@ test_D_idle_no_stamp_no_status_returns_stale() {
 	else
 		print_result "D: idle PR with no stamp and no active status returns stale" 1 "Expected 0, got $rc"
 	fi
+	return 0
+}
+
+test_D2_updated_at_stale_skips_head_commit_lookup() {
+	reset_mock_state
+	# Defaults: updatedAt is already 48h old, so the PR is stale without the
+	# additional commit API lookup. This keeps handover scans cheap when the
+	# cheaper PR metadata signal is sufficient.
+	AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE=enforce _interactive_pr_is_stale "100" "owner/repo"
+	local rc=$?
+	if [[ "$rc" -ne 0 ]]; then
+		print_result "D2: stale updatedAt returns stale without head commit lookup" 1 "Expected 0, got $rc"
+		return 0
+	fi
+	if grep -q "/commits/" "$GH_LOG"; then
+		print_result "D2: stale updatedAt skips head commit lookup" 1 "Unexpected commit API call: $(cat "$GH_LOG")"
+		return 0
+	fi
+	print_result "D2: stale updatedAt skips head commit lookup" 0
 	return 0
 }
 
@@ -370,70 +421,70 @@ test_K_no_takeover_label_blocks_handover() {
 }
 
 # =============================================================================
-# t2383 Fix 2: invalid HOURS value returns not-stale safely
+# t2383 Fix 2: invalid seconds value returns not-stale safely
 # =============================================================================
 
-test_L_invalid_hours_returns_not_stale() {
+test_L_invalid_seconds_returns_not_stale() {
 	reset_mock_state
 	# "24h" is non-numeric — should not crash bash arithmetic
-	AIDEVOPS_INTERACTIVE_PR_HANDOVER_HOURS="24h" \
+	AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS="24h" \
 	AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE=enforce \
 		_interactive_pr_is_stale "100" "owner/repo"
 	local rc=$?
 	if [[ "$rc" -ne 1 ]]; then
-		print_result "L: invalid HOURS ('24h') returns not-stale" 1 "Expected 1, got $rc"
+		print_result "L: invalid seconds ('24h') returns not-stale" 1 "Expected 1, got $rc"
 		return 0
 	fi
-	if ! grep -q "invalid AIDEVOPS_INTERACTIVE_PR_HANDOVER_HOURS" "$LOGFILE"; then
-		print_result "L: invalid HOURS logs validation error" 1 \
+	if ! grep -q "invalid AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS" "$LOGFILE"; then
+		print_result "L: invalid seconds logs validation error" 1 \
 			"Expected validation error in LOGFILE. Got: $(cat "$LOGFILE")"
 		return 0
 	fi
-	print_result "L: invalid HOURS returns not-stale with log message" 0
+	print_result "L: invalid seconds returns not-stale with log message" 0
 	return 0
 }
 
-test_L2_zero_hours_returns_not_stale() {
+test_L2_zero_seconds_returns_not_stale() {
 	reset_mock_state
-	AIDEVOPS_INTERACTIVE_PR_HANDOVER_HOURS="0" \
+	AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS="0" \
 	AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE=enforce \
 		_interactive_pr_is_stale "100" "owner/repo"
 	local rc=$?
 	if [[ "$rc" -ne 1 ]]; then
-		print_result "L2: zero HOURS returns not-stale" 1 "Expected 1, got $rc"
+		print_result "L2: zero seconds returns not-stale" 1 "Expected 1, got $rc"
 		return 0
 	fi
-	print_result "L2: zero HOURS returns not-stale" 0
+	print_result "L2: zero seconds returns not-stale" 0
 	return 0
 }
 
-test_L3_empty_hours_uses_default_24() {
+test_L3_empty_seconds_uses_default_14400() {
 	reset_mock_state
-	# Empty HOURS triggers bash's :- default substitution to "24", which is valid.
+	# Empty seconds triggers bash's :- default substitution to "14400" (4h), which is valid.
 	# The PR is 48h old (reset_mock_state default), so it should return stale (0).
-	AIDEVOPS_INTERACTIVE_PR_HANDOVER_HOURS="" \
+	AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS="" \
 	AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE=enforce \
 		_interactive_pr_is_stale "100" "owner/repo"
 	local rc=$?
 	if [[ "$rc" -ne 0 ]]; then
-		print_result "L3: empty HOURS falls back to default 24 (stale)" 1 "Expected 0 (stale), got $rc"
+		print_result "L3: empty seconds falls back to default 14400 (stale)" 1 "Expected 0 (stale), got $rc"
 		return 0
 	fi
-	print_result "L3: empty HOURS falls back to default 24 (stale)" 0
+	print_result "L3: empty seconds falls back to default 14400 (stale)" 0
 	return 0
 }
 
-test_L4_negative_hours_returns_not_stale() {
+test_L4_negative_seconds_returns_not_stale() {
 	reset_mock_state
-	AIDEVOPS_INTERACTIVE_PR_HANDOVER_HOURS="-5" \
+	AIDEVOPS_IDLE_INTERACTIVE_HANDOVER_SECONDS="-5" \
 	AIDEVOPS_INTERACTIVE_PR_HANDOVER_MODE=enforce \
 		_interactive_pr_is_stale "100" "owner/repo"
 	local rc=$?
 	if [[ "$rc" -ne 1 ]]; then
-		print_result "L4: negative HOURS returns not-stale" 1 "Expected 1, got $rc"
+		print_result "L4: negative seconds returns not-stale" 1 "Expected 1, got $rc"
 		return 0
 	fi
-	print_result "L4: negative HOURS returns not-stale" 0
+	print_result "L4: negative seconds returns not-stale" 0
 	return 0
 }
 
@@ -460,9 +511,11 @@ main() {
 	}
 
 	test_A_fresh_pr_returns_not_stale
+	test_A2_automation_updated_pr_uses_idle_head_commit
 	test_B_stamp_present_returns_not_stale
 	test_C_active_status_label_returns_not_stale
 	test_D_idle_no_stamp_no_status_returns_stale
+	test_D2_updated_at_stale_skips_head_commit_lookup
 	test_E_missing_origin_interactive_returns_not_stale
 	test_F_mode_off_returns_not_stale_unconditionally
 	test_G_mode_detect_logs_and_returns_stale
@@ -471,10 +524,10 @@ main() {
 	test_I_mode_enforce_applies_label_and_posts_comment
 	test_J_enforce_is_idempotent_when_label_already_present
 	test_K_no_takeover_label_blocks_handover
-	test_L_invalid_hours_returns_not_stale
-	test_L2_zero_hours_returns_not_stale
-	test_L3_empty_hours_uses_default_24
-	test_L4_negative_hours_returns_not_stale
+	test_L_invalid_seconds_returns_not_stale
+	test_L2_zero_seconds_returns_not_stale
+	test_L3_empty_seconds_uses_default_14400
+	test_L4_negative_seconds_returns_not_stale
 
 	printf '\n=== %d test(s), %d failure(s) ===\n' "$TESTS_RUN" "$TESTS_FAILED"
 	if [[ "$TESTS_FAILED" -gt 0 ]]; then

@@ -33,7 +33,10 @@ from tabby_yaml_helpers import (
 )
 
 
-TABBY_COMMAND_FIELD_OPENCODE = "/bin/zsh -l -c 'opencode; exec zsh'"
+TABBY_OPENCODE_LAUNCH = "aidevops opencode; exec zsh"
+TABBY_COMMAND_FIELD_OPENCODE = f"/bin/zsh -l -c '{TABBY_OPENCODE_LAUNCH}'"
+LEGACY_TABBY_OPENCODE_LAUNCH = "opencode; exec zsh"
+LEGACY_TABBY_COMMAND_FIELD_OPENCODE = "/bin/zsh -l -c 'opencode; exec zsh'"
 
 
 def is_linked_worktree(repo_path: str) -> bool:
@@ -126,7 +129,7 @@ def build_profile_yaml(
       args:
         - '-l'
         - '-c'
-        - 'opencode; exec zsh'
+        - '{TABBY_OPENCODE_LAUNCH}'
       env: {{}}
       cwd: {cwd}
     terminalColorScheme:
@@ -208,10 +211,18 @@ def _is_broken_opencode_args(args: list[str]) -> bool:
 def _is_command_field_opencode(value: str) -> bool:
     """Return True for the Tabby command-field shape that Tabby cannot exec."""
     value = value.strip()
+    normalised = _normalise_yaml_scalar(value)
     return (
         value == TABBY_COMMAND_FIELD_OPENCODE
-        or _normalise_yaml_scalar(value) == TABBY_COMMAND_FIELD_OPENCODE
+        or value == LEGACY_TABBY_COMMAND_FIELD_OPENCODE
+        or normalised == TABBY_COMMAND_FIELD_OPENCODE
+        or normalised == LEGACY_TABBY_COMMAND_FIELD_OPENCODE
     )
+
+
+def _is_legacy_direct_opencode_args(args: list[str]) -> bool:
+    """Return True for direct OpenCode args that still use the shared DB."""
+    return args == ["-l", "-c", LEGACY_TABBY_OPENCODE_LAUNCH]
 
 
 def _direct_opencode_args_block(args_indent: str, include_env: bool) -> list[str]:
@@ -221,7 +232,7 @@ def _direct_opencode_args_block(args_indent: str, include_env: bool) -> list[str
         f"{args_indent}args:",
         f"{child_indent}- '-l'",
         f"{child_indent}- '-c'",
-        f"{child_indent}- 'opencode; exec zsh'",
+        f"{child_indent}- '{TABBY_OPENCODE_LAUNCH}'",
     ]
     if include_env:
         block.append(f"{args_indent}env: {{}}")
@@ -300,8 +311,24 @@ def _tabby_autorun_env_end(lines: list[str], start: int, base_indent_len: int) -
     return None
 
 
-def repair_broken_opencode_launch_profiles(config_text: str) -> tuple[str, int]:
-    """Repair fragile Tabby OpenCode launch profiles.
+def _line_mentions_opencode_launch(line: str) -> bool:
+    """Return True when a non-comment YAML line mentions an OpenCode launch."""
+    stripped = line.strip()
+    return bool(stripped and not stripped.startswith("#") and "opencode" in stripped)
+
+
+def _profile_mentions_opencode_launch(profile_lines: list[str]) -> bool:
+    """Return True when a profile block clearly targets OpenCode."""
+    return any(_line_mentions_opencode_launch(line) for line in profile_lines)
+
+
+def _profile_block_end(lines: list[str], start: int) -> int:
+    """Return the first line after the Tabby profile block at ``start``."""
+    return _block_end(lines, start, 2)
+
+
+def _repair_broken_opencode_launch_profile_block(config_text: str) -> tuple[str, int]:
+    """Repair fragile Tabby OpenCode launch profiles inside one profile block.
 
     ``zsh -i -c`` enables interactive startup while executing a command string,
     which can trigger Powerlevel10k/gitstatus job-control errors before the TUI
@@ -380,7 +407,7 @@ def repair_broken_opencode_launch_profiles(config_text: str) -> tuple[str, int]:
                     _direct_opencode_args_block(args_indent, include_env=include_env)
                 )
                 pending_command_field_indent = None
-            elif _is_broken_opencode_args(inline_args):
+            elif _is_broken_opencode_args(inline_args) or _is_legacy_direct_opencode_args(inline_args):
                 next_line = _next_option_line(lines, i + 1)
                 include_env = not _line_is_option_key(
                     next_line, args_indent, "env"
@@ -415,7 +442,7 @@ def repair_broken_opencode_launch_profiles(config_text: str) -> tuple[str, int]:
             ) and not _has_prior_option_key(repaired, args_indent, "env")
             repaired.extend(_direct_opencode_args_block(args_indent, include_env=include_env))
             pending_command_field_indent = None
-        elif _is_broken_opencode_args(block_args):
+        elif _is_broken_opencode_args(block_args) or _is_legacy_direct_opencode_args(block_args):
             next_line = _next_option_line(lines, block_end)
             include_env = not _line_is_option_key(
                 next_line, args_indent, "env"
@@ -443,6 +470,43 @@ def repair_broken_opencode_launch_profiles(config_text: str) -> tuple[str, int]:
                 include_env=include_env,
             )
         )
+
+    return "\n".join(repaired), repairs
+
+
+def repair_broken_opencode_launch_profiles(config_text: str) -> tuple[str, int]:
+    """Repair fragile OpenCode profiles without touching custom profiles.
+
+    Tabby configs can contain hand-authored profiles for local web servers,
+    shells, and other commands. The OpenCode repair logic manages ``command``,
+    ``args``, and ``env`` keys, so scope it to profile blocks that explicitly
+    mention OpenCode and preserve all other profile blocks byte-for-byte.
+    """
+    lines = config_text.split("\n")
+    repaired: list[str] = []
+    repairs = 0
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        if not line.startswith("  - name:"):
+            repaired.append(line)
+            i += 1
+            continue
+
+        block_end = _profile_block_end(lines, i)
+        profile_lines = lines[i:block_end]
+        if not _profile_mentions_opencode_launch(profile_lines):
+            repaired.extend(profile_lines)
+            i = block_end
+            continue
+
+        repaired_block, repaired_count = _repair_broken_opencode_launch_profile_block(
+            "\n".join(profile_lines)
+        )
+        repaired.extend(repaired_block.split("\n"))
+        repairs += repaired_count
+        i = block_end
 
     return "\n".join(repaired), repairs
 

@@ -177,7 +177,7 @@ get_repo_role_by_slug() {
 # The jq filter excludes only deterministic blockers:
 #   - status:blocked (explicit hold)
 #   - needs-* (waiting for maintainer action)
-#   - supervisor/persistent/routine-tracking (non-work telemetry)
+#   - supervisor/persistent/routine-tracking/infrastructure (non-work telemetry/advisories)
 #   - parent-task (decomposition tracker, never directly dispatchable; t2924)
 #   - no-auto-dispatch (explicit dispatch opt-out; t2924)
 #   - status:in-progress, status:in-review, status:claimed, status:done
@@ -224,11 +224,21 @@ list_dispatchable_issue_candidates_json() {
 			.[] |
 			(.labels | map(.name)) as $labels |
 			(.assignees | map(.login)) as $assignees |
+			# GH#23442: REST /repos/{owner}/{repo}/issues can include pull
+			# requests. Keep dispatch candidate enumeration issue-only when
+			# gh_issue_list falls back to REST or a wrapper returns mixed results.
+			select((.pullRequest // .pull_request // null) == null) |
+			select((((.url // "") | tostring | contains("/pull/"))) | not) |
 			select(($labels | index("status:blocked")) == null) |
 			select(([$labels[] | select(startswith("needs-"))] | length) == 0) |
 			select(($labels | index("supervisor")) == null) |
 			select(($labels | index("persistent")) == null) |
 			select(($labels | index("routine-tracking")) == null) |
+			# GH#24152: infrastructure outage advisories are operational alerts, not
+			# implementation tasks. They may carry status:available after generic label
+			# normalization, but dispatching /full-loop workers would chase external
+			# billing/runner incidents with code changes.
+			select(($labels | index("infrastructure")) == null) |
 			# t2924: filter non-dispatchable management labels at candidate-build
 			# time, not dispatch time. Reduces wasted GraphQL+CPU on every pulse cycle
 			# re-evaluating issues the dispatcher would always block.

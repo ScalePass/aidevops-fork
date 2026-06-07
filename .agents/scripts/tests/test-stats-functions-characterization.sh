@@ -100,13 +100,15 @@ teardown_sandbox() {
 # updated in the same PR. Reviewers: verify the removal is intentional.
 #######################################
 readonly -a EXPECTED_FUNCTIONS=(
-	# Cluster A: stats-shared.sh (3 fns)
+	# Cluster A: stats-shared.sh (4 fns)
 	"_validate_repo_slug"
+	"_sanitize_runner_identity_for_cache"
 	"_get_runner_role"
 	"_persist_role_cache"
-	# Cluster B: stats-health-dashboard.sh (22 fns)
+	# Cluster B: stats-health-dashboard.sh (23 fns)
 	"update_health_issues"
 	"_refresh_person_stats_cache"
+	"_resolve_current_gh_login_or_fallback"
 	"_update_health_issue_for_repo"
 	"_resolve_health_issue_number"
 	"_find_health_issue"
@@ -266,6 +268,28 @@ test_validate_repo_slug() {
 }
 
 #######################################
+# Test 2b: _resolve_current_gh_login_or_fallback rejects fallback identities
+# that could be parsed as flags when reused in CLI arguments.
+#######################################
+test_resolve_current_gh_login_rejects_leading_hyphen_fallback() {
+	gh() {
+		return 1
+	}
+
+	whoami() {
+		printf '%s' "-runner"
+		return 0
+	}
+
+	local output
+	output=$(_resolve_current_gh_login_or_fallback 2>/dev/null)
+	assert_equals "_resolve_current_gh_login_or_fallback rejects leading hyphen fallback" "unknown-runner" "$output"
+
+	unset -f gh whoami
+	return 0
+}
+
+#######################################
 # Test 3: _persist_role_cache -- writes role to a deterministic file path.
 # Signature: _persist_role_cache runner_user repo_slug role
 # Verify the file is created with expected content in the sandbox.
@@ -355,6 +379,7 @@ main() {
 
 	test_source_and_function_existence
 	test_validate_repo_slug
+	test_resolve_current_gh_login_rejects_leading_hyphen_fallback
 	test_persist_role_cache
 	test_sourcing_idempotency
 	test_sweep_state_round_trip

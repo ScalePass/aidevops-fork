@@ -601,6 +601,7 @@ _has_active_claim() {
 # Outputs: one of the following signals on stdout when blocking:
 #   PARENT_TASK_BLOCKED (label=<name>)      — unconditional parent-task / meta block
 #   NO_AUTO_DISPATCH_BLOCKED (label=...)    — unconditional no-auto-dispatch block (t2832)
+#   INFRASTRUCTURE_BLOCKED (label=...)      — infrastructure / billing / runner advisory block
 #   COST_BUDGET_EXCEEDED (...)              — token spend circuit breaker
 #   GUARD_UNCERTAIN (reason=...)            — internal error, cannot determine safety
 #   <assignee info>                         — active claim by another runner
@@ -665,6 +666,42 @@ _is_assigned_check_parent_task() {
 }
 
 #######################################
+# is_assigned helper: check an unconditional label block.
+#
+# Args:
+#   $1 = issue metadata JSON (from `gh issue view --json ...,labels`)
+#   $2 = issue number for traceable error output
+#   $3 = repo slug for traceable error output
+#   $4 = label name to check
+#   $5 = block signal to emit when label is present
+#   $6 = check name for GUARD_UNCERTAIN output
+# Returns: exit 0 if label found or jq fails (prints signal),
+#          exit 1 if label absent and jq succeeds
+#######################################
+_is_assigned_check_label_block() {
+	local meta_json="$1"
+	local issue_number="${2:-unknown}"
+	local repo_slug="${3:-unknown}"
+	local label_name="$4"
+	local block_signal="$5"
+	local check_name="$6"
+	local _jq_rc=0
+	local label_hit
+	label_hit=$(printf '%s' "$meta_json" |
+		jq -r --arg label_name "$label_name" '(.labels // [])[].name | select(. == $label_name)' 2>/dev/null | head -n 1) || _jq_rc=$?
+	if [[ "$_jq_rc" -ne 0 ]]; then
+		printf 'GUARD_UNCERTAIN (reason=jq-failure call=%s issue=%s repo=%s)\n' \
+			"$check_name" "$issue_number" "$repo_slug"
+		return 0
+	fi
+	if [[ -n "$label_hit" ]]; then
+		printf '%s (label=%s)\n' "$block_signal" "$label_hit"
+		return 0
+	fi
+	return 1
+}
+
+#######################################
 # is_assigned helper: check the no-auto-dispatch unconditional block (t2832).
 #
 # t2832: no-auto-dispatch label is an unconditional dispatch block. The label
@@ -703,21 +740,60 @@ _is_assigned_check_no_auto_dispatch() {
 	local meta_json="$1"
 	local issue_number="${2:-unknown}"
 	local repo_slug="${3:-unknown}"
-	# t2061: explicit rc capture — fail-closed on jq failure.
-	local _jq_rc=0
-	local nad_hit
-	nad_hit=$(printf '%s' "$meta_json" |
-		jq -r '(.labels // [])[].name | select(. == "no-auto-dispatch")' 2>/dev/null | head -n 1) || _jq_rc=$?
-	if [[ "$_jq_rc" -ne 0 ]]; then
-		printf 'GUARD_UNCERTAIN (reason=jq-failure call=no-auto-dispatch-check issue=%s repo=%s)\n' \
-			"$issue_number" "$repo_slug"
-		return 0
-	fi
-	if [[ -n "$nad_hit" ]]; then
-		printf 'NO_AUTO_DISPATCH_BLOCKED (label=%s)\n' "$nad_hit"
-		return 0
-	fi
-	return 1
+	_is_assigned_check_label_block "$meta_json" "$issue_number" "$repo_slug" \
+		"no-auto-dispatch" "NO_AUTO_DISPATCH_BLOCKED" "no-auto-dispatch-check"
+}
+
+#######################################
+# is_assigned helper: check the infrastructure unconditional block.
+#
+# Infrastructure issues often describe billing, runner, hosting, or platform
+# advisories that must remain visible for human operations rather than consume
+# worker dispatch capacity. Candidate enumeration filters this label, but the
+# dispatch path also checks it to close the race where a label is added after
+# candidate build and before worker launch.
+#
+# Args:
+#   $1 = issue metadata JSON (from `gh issue view --json ...,labels`)
+#   $2 = (optional) issue number — included in GUARD_UNCERTAIN output
+#   $3 = (optional) repo slug — included in GUARD_UNCERTAIN output
+# Returns: exit 0 if infrastructure label found or jq fails (prints signal),
+#          exit 1 if label absent and jq succeeds
+#######################################
+_is_assigned_check_infrastructure() {
+	local meta_json="$1"
+	local issue_number="${2:-unknown}"
+	local repo_slug="${3:-unknown}"
+	_is_assigned_check_label_block "$meta_json" "$issue_number" "$repo_slug" \
+		"infrastructure" "INFRASTRUCTURE_BLOCKED" "infrastructure-check"
+}
+
+#######################################
+# is_assigned helper: check the hold-for-review unconditional block.
+#
+# Maintainers use `hold-for-review` to pause automation while they inspect an
+# issue or PR. PR auto-merge paths already honour the label; the issue dispatch
+# path must treat it as a hard dispatch block too, without overloading
+# `needs-maintainer-review` (which is the non-maintainer trust gate).
+#
+# Mirrors _is_assigned_check_no_auto_dispatch structure:
+#   - Same jq-failure fail-closed contract: GUARD_UNCERTAIN on jq error
+#   - Same return-code contract: 0 = block (with signal printed), 1 = allow
+#   - Same args shape for traceable error output
+#
+# Args:
+#   $1 = issue metadata JSON (from `gh issue view --json ...,labels`)
+#   $2 = (optional) issue number — included in GUARD_UNCERTAIN output
+#   $3 = (optional) repo slug — included in GUARD_UNCERTAIN output
+# Returns: exit 0 if hold-for-review label found or jq fails (prints signal),
+#          exit 1 if label absent and jq succeeds
+#######################################
+_is_assigned_check_hold_for_review() {
+	local meta_json="$1"
+	local issue_number="${2:-unknown}"
+	local repo_slug="${3:-unknown}"
+	_is_assigned_check_label_block "$meta_json" "$issue_number" "$repo_slug" \
+		"hold-for-review" "HOLD_FOR_REVIEW_BLOCKED" "hold-for-review-check"
 }
 
 #######################################
@@ -1123,6 +1199,19 @@ is_assigned() {
 		return 0
 	fi
 
+	# Infrastructure/billing/runner advisories are dispatch-time hard blocks too;
+	# candidate filtering alone is insufficient when labels change mid-cycle.
+	if _is_assigned_check_infrastructure "$issue_meta_json" "$issue_number" "$repo_slug"; then
+		return 0
+	fi
+
+	# Maintainer-requested review hold. This is intentionally separate from
+	# needs-maintainer-review, whose trust-boundary semantics are reserved for
+	# non-maintainer content and circuit-breaker review.
+	if _is_assigned_check_hold_for_review "$issue_meta_json" "$issue_number" "$repo_slug"; then
+		return 0
+	fi
+
 	# t3197: per-issue dispatch cooldown after no_worker_process launch failures.
 	# Short-circuits with DISPATCH_COOLDOWN_ACTIVE while the marker is unexpired.
 	# Fail-open: feature-gated by DISPATCH_COOLDOWN_AFTER_LAUNCH_FAILURE_SECONDS,
@@ -1287,7 +1376,8 @@ is_assigned() {
 # enumerate_blockers — report ALL structural dispatch blockers for an issue.
 #
 # Unlike is_assigned() which short-circuits on the first match, this function
-# runs every unconditional structural check (parent-task, no-auto-dispatch)
+# runs every unconditional structural check (parent-task, no-auto-dispatch,
+# infrastructure, hold-for-review)
 # and emits ALL matching signals as newline-separated tokens on stdout.
 #
 # Intentionally excludes cost-budget, hydration window, and assignee checks —
@@ -1354,7 +1444,21 @@ enumerate_blockers() {
 		_found=true
 	fi
 
-	# Check 3: t3197 dispatch cooldown after no_worker_process launch failure.
+	# Check 3: infrastructure advisory/operator block.
+	_blocker_out=$(_is_assigned_check_infrastructure "$issue_meta_json" "$issue_number" "$repo_slug" 2>/dev/null) || true
+	if [[ -n "$_blocker_out" ]]; then
+		printf '%s\n' "$_blocker_out"
+		_found=true
+	fi
+
+	# Check 4: hold-for-review unconditional maintainer hold.
+	_blocker_out=$(_is_assigned_check_hold_for_review "$issue_meta_json" "$issue_number" "$repo_slug" 2>/dev/null) || true
+	if [[ -n "$_blocker_out" ]]; then
+		printf '%s\n' "$_blocker_out"
+		_found=true
+	fi
+
+	# Check 5: t3197 dispatch cooldown after no_worker_process launch failure.
 	_blocker_out=$(_is_assigned_check_dispatch_cooldown "$issue_number" "$repo_slug" 2>/dev/null) || true
 	if [[ -n "$_blocker_out" ]]; then
 		printf '%s\n' "$_blocker_out"
@@ -1716,6 +1820,14 @@ classify_dispatch_blocker_reason() {
 	lower_signal=$(printf '%s' "$signal" | tr '[:upper:]' '[:lower:]')
 
 	case "$lower_signal" in
+		*interactive_review_hold* | *interactive*review*hold*)
+			printf 'interactive_review_hold\n'
+			return 0
+			;;
+		*pr_target_not_dispatchable* | *pull*request*not*a*dispatchable*issue* | *target*is*a*pull*request*)
+			printf 'pr_target_not_dispatchable\n'
+			return 0
+			;;
 		*cost_budget_exceeded*)
 			printf 'cost_budget_exceeded\n'
 			return 0
@@ -1752,7 +1864,7 @@ classify_dispatch_blocker_reason() {
 			printf 'local_capacity_gate\n'
 			return 0
 			;;
-		*no-auto-dispatch* | *external*author*gate* | *nmr*gate* | *approval*required*)
+		*no-auto-dispatch* | *infrastructure* | *external*author*gate* | *nmr*gate* | *approval*required*)
 			printf 'policy_gate\n'
 			return 0
 			;;
@@ -1929,7 +2041,23 @@ main() {
 			echo "Error: dispatch-claim-helper.sh not found at ${CLAIM_HELPER}" >&2
 			return 2
 		fi
-		"$CLAIM_HELPER" claim "$1" "$2" "${3:-}"
+		local _claim_issue="$1" _claim_repo="$2" _claim_runner="${3:-}"
+		local _claim_guard_output="" _claim_guard_rc=0
+		_claim_guard_output=$(is_assigned "$_claim_issue" "$_claim_repo" "$_claim_runner" 2>&1) || _claim_guard_rc=$?
+		case "$_claim_guard_rc" in
+		0)
+			printf 'CLAIM_BLOCKED: active_assignment issue=#%s repo=%s runner=%s signal=%s\n' \
+				"$_claim_issue" "$_claim_repo" "$_claim_runner" "$_claim_guard_output"
+			return 1
+			;;
+		1) ;;
+		*)
+			printf 'CLAIM_BLOCKED: assignment_guard_error issue=#%s repo=%s runner=%s rc=%s signal=%s\n' \
+				"$_claim_issue" "$_claim_repo" "$_claim_runner" "$_claim_guard_rc" "$_claim_guard_output"
+			return 1
+			;;
+		esac
+		DISPATCH_CLAIM_ASSIGNMENT_GUARD=false "$CLAIM_HELPER" claim "$_claim_issue" "$_claim_repo" "$_claim_runner"
 		;;
 	check-claim)
 		# GH#17590: Pre-check for active claims (read-only, no comment posted).

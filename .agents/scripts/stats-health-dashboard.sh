@@ -39,6 +39,7 @@ _STATS_HEALTH_DASHBOARD_LOADED=1
 # create a duplicate while the dedup lookups are silently unable to
 # see existing ones.
 readonly _HEALTH_QUERY_FAILED_SENTINEL="__QUERY_FAILED__"
+readonly _HEALTH_CROSS_REPO_MAX_REPOS=30
 
 # Defensive SCRIPT_DIR fallback
 if [[ -z "${SCRIPT_DIR:-}" ]]; then
@@ -61,6 +62,37 @@ source "${SCRIPT_DIR}/stats-health-dashboard-data.sh"
 # --- Orchestration functions ---
 
 #######################################
+# Resolve current GitHub login, validating gh output before use.
+# Output: validated GitHub login, or a validated local fallback
+#######################################
+_resolve_current_gh_login_or_fallback() {
+	local gh_login=""
+	local fallback_login=""
+
+	gh_login=$(_gh_with_timeout read gh api user --jq '.login // ""') || gh_login=""
+	if [[ "$gh_login" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]; then
+		printf '%s' "$gh_login"
+		return 0
+	fi
+
+	fallback_login=$(whoami 2>/dev/null) || fallback_login=""
+	# Local system usernames are not GitHub logins; accept common POSIX-safe
+	# account characters while rejecting whitespace/control characters because
+	# this value is reused in labels, cache keys, and gh CLI arguments.
+	if [[ "$fallback_login" =~ ^[[:alnum:]_][[:alnum:]_.-]*$ ]]; then
+		echo "[stats] GitHub login unavailable or invalid; using local fallback identity: ${fallback_login}" \
+			>>"${LOGFILE:-/dev/null}"
+		printf '%s' "$fallback_login"
+		return 0
+	fi
+
+	echo "[stats] GitHub login unavailable or invalid; using anonymous fallback identity" \
+		>>"${LOGFILE:-/dev/null}"
+	printf '%s' "unknown-runner"
+	return 0
+}
+
+#######################################
 # Activity guard — returns 0 to proceed, 1 to skip.
 # Only runs when the cached health-issue file is absent (would create a new one).
 #######################################
@@ -72,25 +104,34 @@ _check_health_issue_activity_guard() {
 
 	[[ -f "$health_issue_file" ]] && return 0
 
-	local guard_pr_count guard_assigned_count guard_worker_count
-	guard_pr_count=$(gh pr list --repo "$repo_slug" --state open \
-		--json number --jq 'length' 2>/dev/null || echo "0")
-	guard_assigned_count=$(gh_issue_list --repo "$repo_slug" \
-		--assignee "$runner_user" --state open \
-		--json number --jq 'length' 2>/dev/null || echo "0")
-
+	local guard_pr_count guard_assigned_count guard_auto_dispatch_count guard_worker_count
 	local _guard_fields=()
 	while IFS= read -r -d '' _gf; do
 		_guard_fields+=("$_gf")
 	done < <(_scan_active_workers "${repo_path:-}")
 	guard_worker_count="${_guard_fields[1]:-0}"
+	[[ "${guard_worker_count:-0}" -gt 0 ]] && return 0
 
-	if [[ "${guard_pr_count:-0}" -eq 0 && "${guard_assigned_count:-0}" -eq 0 && "${guard_worker_count:-0}" -eq 0 ]]; then
-		echo "[stats] Health issue: skipping creation for ${repo_slug} — no active PRs, issues, or workers" \
-			>>"${LOGFILE:-/dev/null}"
-		return 1
-	fi
-	return 0
+	guard_pr_count=$(gh_pr_list --repo "$repo_slug" --state open \
+		--json number --jq 'length' 2>/dev/null || echo "0")
+	[[ "$guard_pr_count" =~ ^[0-9]+$ ]] || guard_pr_count="0"
+	[[ "${guard_pr_count:-0}" -gt 0 ]] && return 0
+
+	guard_assigned_count=$(gh_issue_list --repo "$repo_slug" \
+		--assignee "$runner_user" --state open \
+		--json number --jq 'length' 2>/dev/null || echo "0")
+	[[ "$guard_assigned_count" =~ ^[0-9]+$ ]] || guard_assigned_count="0"
+	[[ "${guard_assigned_count:-0}" -gt 0 ]] && return 0
+
+	guard_auto_dispatch_count=$(gh_issue_list --repo "$repo_slug" \
+		--label "auto-dispatch" --state open \
+		--json number --jq 'length' 2>/dev/null || echo "0")
+	[[ "$guard_auto_dispatch_count" =~ ^[0-9]+$ ]] || guard_auto_dispatch_count="0"
+	[[ "${guard_auto_dispatch_count:-0}" -gt 0 ]] && return 0
+
+	echo "[stats] Health issue: skipping creation for ${repo_slug} — no active PRs, assigned issues, auto-dispatch work, or workers" \
+		>>"${LOGFILE:-/dev/null}"
+	return 1
 }
 
 #######################################
@@ -116,7 +157,7 @@ _check_health_issue_activity_guard() {
 #   $3 - cross-repo activity markdown (pre-computed by update_health_issues)
 #   $4 - cross-repo session time markdown (pre-computed by update_health_issues)
 #   $5 - cross-repo person stats markdown (pre-computed by update_health_issues)
-# Returns: 0 always (best-effort, never breaks the pulse)
+# Returns: 0 when refreshed/skipped, 1 when an existing dashboard update fails
 #######################################
 _update_health_issue_for_repo() {
 	local repo_slug="$1"
@@ -128,7 +169,7 @@ _update_health_issue_for_repo() {
 	[[ -z "$repo_slug" ]] && return 0
 
 	local runner_user
-	runner_user=$(gh api user --jq '.login' || whoami)
+	runner_user=$(_resolve_current_gh_login_or_fallback)
 
 	local runner_role
 	runner_role=$(_get_runner_role "$runner_user" "$repo_slug")
@@ -148,7 +189,9 @@ _update_health_issue_for_repo() {
 
 	local slug_safe="${repo_slug//\//-}"
 	local cache_dir="${HOME}/.aidevops/logs"
-	local health_issue_file="${cache_dir}/health-issue-${canonical_identity}-${slug_safe}"
+	local canonical_identity_cache_safe
+	canonical_identity_cache_safe=$(_sanitize_runner_identity_for_cache "$canonical_identity")
+	local health_issue_file="${cache_dir}/health-issue-${canonical_identity_cache_safe}-${slug_safe}"
 	mkdir -p "$cache_dir"
 
 	_check_health_issue_activity_guard \
@@ -175,7 +218,11 @@ _update_health_issue_for_repo() {
 		_ensure_health_issue_pinned "$health_issue_number" "$repo_slug" "$runner_user"
 	fi
 
-	echo "$health_issue_number" >"$health_issue_file"
+	# Cache only the trailing issue number. The resolver may emit warnings before
+	# the value, and a multi-line cache makes later dashboard updates stale.
+	local cache_issue_number
+	cache_issue_number=$(printf '%s\n' "$health_issue_number" | awk '/^[0-9]+$/ { value=$0 } match($0, /\/[0-9]+$/) { value=substr($0, RSTART + 1, RLENGTH - 1) } END { if (value != "") print value }')
+	echo "$cache_issue_number" >"$health_issue_file"
 
 	local now_iso
 	now_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -193,11 +240,11 @@ _update_health_issue_for_repo() {
 	# Bare `gh issue edit` always uses GraphQL and silently fails the body
 	# update when the 5000/hr GraphQL budget is exhausted, leaving the
 	# dashboard stale until the budget resets (up to 1h). GH#33.
-	body_edit_stderr=$(gh_issue_edit_safe "$health_issue_number" --repo "$repo_slug" \
+	body_edit_stderr=$(_gh_with_timeout write gh_issue_edit_safe "$health_issue_number" --repo "$repo_slug" \
 		--body "$body" 2>&1 >/dev/null) || {
 		echo "[stats] Health issue: failed to update body for #${health_issue_number}: ${body_edit_stderr}" \
 			>>"$LOGFILE"
-		return 0
+		return 1
 	}
 
 	# Re-extract headline counts from the rendered body to build the title.
@@ -216,6 +263,29 @@ _update_health_issue_for_repo() {
 		"$pr_count" "$pr_label" "$assigned_issue_count" \
 		"$worker_count" "$worker_label"
 
+	return 0
+}
+
+#######################################
+# Filter repo entries to repos where public routines are authorized.
+# Arguments:
+#   $1 - newline-delimited slug|path entries
+#   $2 - authenticated GitHub user
+# Output: authorized slug|path entries
+#######################################
+_filter_routine_eligible_repo_entries() {
+	local repo_entries="$1"
+	local routine_runner_user="$2"
+	local slug path
+
+	while IFS='|' read -r slug path; do
+		[[ -z "$slug" ]] && continue
+		if ! aidevops_can_run_repo_routines "$slug" "$routine_runner_user"; then
+			echo "[stats] Health dashboard skipped for ${slug}: ${routine_runner_user} is not maintainer-equivalent" >>"$LOGFILE"
+			continue
+		fi
+		printf '%s|%s\n' "$slug" "$path"
+	done <<<"$repo_entries"
 	return 0
 }
 
@@ -249,6 +319,18 @@ update_health_issues() {
 		return 0
 	fi
 
+	local routine_runner_user
+	routine_runner_user=$(aidevops_repo_state_current_user)
+	if [[ -z "$routine_runner_user" ]]; then
+		echo "[stats] Health dashboard skipped: could not resolve authenticated GitHub user" >>"$LOGFILE"
+		return 0
+	fi
+
+	repo_entries=$(_filter_routine_eligible_repo_entries "$repo_entries" "$routine_runner_user")
+	if [[ -z "$repo_entries" ]]; then
+		return 0
+	fi
+
 	# Refresh person-stats cache if stale (t1426: hourly, not every pulse)
 	_refresh_person_stats_cache || true
 
@@ -256,21 +338,29 @@ update_health_issues() {
 	# This avoids N×N git log walks (one cross-repo scan per repo dashboard)
 	# and redundant DB queries for session time.
 	# Person stats read from cache (refreshed hourly by _refresh_person_stats_cache).
+	# Skip the optional cross-repo summaries above _HEALTH_CROSS_REPO_MAX_REPOS;
+	# the contributor activity helper can time out at that scale and stall the
+	# dashboard refresh.
 	local cross_repo_md=""
 	local cross_repo_session_time_md=""
 	local cross_repo_person_stats_md=""
 	local activity_helper="${HOME}/.aidevops/agents/scripts/contributor-activity-helper.sh"
 	if [[ -x "$activity_helper" ]]; then
 		local all_repo_paths
-		all_repo_paths=$(jq -r '.initialized_repos[] | select(.pulse == true and (.local_only // false) == false) | .path' "$repos_json" || echo "")
+		all_repo_paths=$(printf '%s\n' "$repo_entries" | awk -F'|' 'NF >= 2 && $2 != "" { print $2 }')
 		if [[ -n "$all_repo_paths" ]]; then
 			local -a cross_args=()
 			while IFS= read -r rp; do
 				[[ -n "$rp" ]] && cross_args+=("$rp")
 			done <<<"$all_repo_paths"
-			if [[ ${#cross_args[@]} -gt 1 ]]; then
-				cross_repo_md=$(bash "$activity_helper" cross-repo-summary "${cross_args[@]}" --period month --format markdown || echo "_Cross-repo data unavailable._")
-				cross_repo_session_time_md=$(bash "$activity_helper" cross-repo-session-time "${cross_args[@]}" --period all --format markdown || echo "_Cross-repo session data unavailable._")
+			if [[ ${#cross_args[@]} -gt 1 && ${#cross_args[@]} -le $_HEALTH_CROSS_REPO_MAX_REPOS ]]; then
+				cross_repo_md=$(timeout 120 bash "$activity_helper" cross-repo-summary "${cross_args[@]}" --period month --format markdown || echo "_Cross-repo data unavailable._")
+				cross_repo_session_time_md=$(timeout 120 bash "$activity_helper" cross-repo-session-time "${cross_args[@]}" --period all --format markdown || echo "_Cross-repo session data unavailable._")
+			elif [[ ${#cross_args[@]} -gt $_HEALTH_CROSS_REPO_MAX_REPOS ]]; then
+				local cross_repo_skip_message="Cross-repo summary skipped: ${#cross_args[@]} repositories exceeds limit ${_HEALTH_CROSS_REPO_MAX_REPOS}."
+				echo "[stats] ${cross_repo_skip_message}" >>"${LOGFILE:-/dev/null}"
+				cross_repo_md="_${cross_repo_skip_message}_"
+				cross_repo_session_time_md="_${cross_repo_skip_message}_"
 			fi
 		fi
 	fi
@@ -280,14 +370,23 @@ update_health_issues() {
 	fi
 
 	local updated=0
+	local failed=0
 	while IFS='|' read -r slug path; do
 		[[ -z "$slug" ]] && continue
-		_update_health_issue_for_repo "$slug" "$path" "$cross_repo_md" "$cross_repo_session_time_md" "$cross_repo_person_stats_md" || true
+		if ! _update_health_issue_for_repo "$slug" "$path" "$cross_repo_md" "$cross_repo_session_time_md" "$cross_repo_person_stats_md"; then
+			echo "[stats] Health issue update failed for ${slug}" >>"$LOGFILE"
+			failed=$((failed + 1))
+			continue
+		fi
 		updated=$((updated + 1))
 	done <<<"$repo_entries"
 
 	if [[ "$updated" -gt 0 ]]; then
 		echo "[stats] Health issues: updated $updated repo(s)" >>"$LOGFILE"
+	fi
+	if [[ "$failed" -gt 0 ]]; then
+		echo "[stats] Health issues: failed $failed repo(s)" >>"$LOGFILE"
+		return 1
 	fi
 	return 0
 }

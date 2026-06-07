@@ -15,8 +15,8 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync } from "fs";
-import { tmpdir } from "os";
+import { mkdtempSync, writeFileSync, readFileSync, chmodSync, symlinkSync, rmSync } from "fs";
+import { tmpdir, homedir } from "os";
 import { join } from "path";
 
 import {
@@ -300,6 +300,66 @@ describe("tryRepairSignature", () => {
     assert.ok(fileContent.includes("unsigned content"), "original preserved");
   });
 
+  test("uses cheap no-session helper path when repairing body-file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "t24374-fast-helper-"));
+    const helper = join(dir, "gh-signature-helper.sh");
+    const argvLog = join(dir, "helper-argv.log");
+    const bodyFile = join(dir, "body.md");
+    writeFileSync(bodyFile, "unsigned content\n");
+    writeFileSync(
+      helper,
+      `#!/usr/bin/env bash
+printf '%s\n' "$*" >"${argvLog}"
+printf '\n\n${SIG_MARKER}\n---\n[aidevops.sh](https://aidevops.sh) v9.9.9 stub\n'
+`,
+    );
+    chmodSync(helper, 0o755);
+    const { log } = makeLogger();
+    const cmd = `gh issue comment 1 --repo o/r --body-file ${bodyFile}`;
+    const out = tryRepairSignature(cmd, dir, log);
+    assert.equal(out.status, "ok");
+    assert.match(readFileSync(argvLog, "utf-8"), /footer --no-session --body/);
+  });
+
+  test("allows same-command body-file creation for exec-time shim repair", () => {
+    const dir = setupStubHelper();
+    const bodyFile = join(dir, "created-later.md");
+    const { log, entries } = makeLogger();
+    const cmd = `printf 'body\\n' > ${bodyFile} && gh issue comment 1 --repo o/r --body-file ${bodyFile}`;
+    const out = tryRepairSignature(cmd, dir, log);
+    assert.deepEqual(out, { status: "ok", cmd });
+    assert.ok(
+      entries.some((entry) => /deferring signature injection to PATH shim/.test(entry.msg)),
+      "same-command creation should be explicitly delegated to shim",
+    );
+  });
+
+  test("allows same-command body-file creation with echo for exec-time shim repair", () => {
+    const dir = setupStubHelper();
+    const bodyFile = join(dir, "created-later-echo.md");
+    const { log, entries } = makeLogger();
+    const cmd = `echo 'body' > ${bodyFile} && gh issue comment 1 --repo o/r --body-file ${bodyFile}`;
+    const out = tryRepairSignature(cmd, dir, log);
+    assert.deepEqual(out, { status: "ok", cmd });
+    assert.ok(
+      entries.some((entry) => /deferring signature injection to PATH shim/.test(entry.msg)),
+      "same-command creation with echo should be explicitly delegated to shim",
+    );
+  });
+
+  test("allows same-command body-file creation after earlier gh command text", () => {
+    const dir = setupStubHelper();
+    const bodyFile = join(dir, "created-after-gh.md");
+    const { log, entries } = makeLogger();
+    const cmd = `gh auth status >/dev/null && echo 'body' > ${bodyFile} && gh issue comment 1 --repo o/r --body-file ${bodyFile}`;
+    const out = tryRepairSignature(cmd, dir, log);
+    assert.deepEqual(out, { status: "ok", cmd });
+    assert.ok(
+      entries.some((entry) => /deferring signature injection to PATH shim/.test(entry.msg)),
+      "same-command creation after earlier gh command text should be delegated to shim",
+    );
+  });
+
   test("is idempotent on already-signed --body-file", () => {
     const dir = setupStubHelper();
     const bodyFile = join(dir, "signed.md");
@@ -311,6 +371,61 @@ describe("tryRepairSignature", () => {
     assert.equal(out.status, "ok", "signed file repair returns ok");
     const after = readFileSync(bodyFile, "utf-8");
     assert.equal(before, after, "signed file should not be modified");
+  });
+
+  test("no-ops on signed command-substitution --body without reparsing", () => {
+    const { log } = makeLogger();
+    const cmd = 'gh issue comment 1 --body "$(make-body && gh-signature-helper.sh footer)"';
+    const out = tryRepairSignature(cmd, "/nonexistent/aidevops-helper-path", log);
+    assert.deepEqual(out, { status: "ok", cmd });
+  });
+
+  test("no-ops on signed process-substitution --body-file without reparsing", () => {
+    const { log } = makeLogger();
+    const cmd = 'gh issue comment 1 --body-file <(make-body && gh-signature-helper.sh footer)';
+    const out = tryRepairSignature(cmd, "/nonexistent/aidevops-helper-path", log);
+    assert.deepEqual(out, { status: "ok", cmd });
+  });
+
+  test("no-ops on machine-protocol commands without requiring helper", () => {
+    const { log } = makeLogger();
+    const cmd = 'gh issue comment 1 --body "<!-- MERGE_SUMMARY -->\\nsummary"';
+    const out = tryRepairSignature(cmd, "/nonexistent/aidevops-helper-path", log);
+    assert.deepEqual(out, { status: "ok", cmd });
+  });
+
+  test("no-ops on machine-protocol --body-file content", () => {
+    const dir = mkdtempSync(join(tmpdir(), "t2685-machine-file-"));
+    const bodyFile = join(dir, "machine-protocol.md");
+    writeFileSync(bodyFile, "<!-- MERGE_SUMMARY -->\nsummary\n");
+    const before = readFileSync(bodyFile, "utf-8");
+    const { log } = makeLogger();
+    const cmd = `gh issue comment 1 --repo o/r --body-file ${bodyFile}`;
+    const out = tryRepairSignature(cmd, dir, log);
+    const after = readFileSync(bodyFile, "utf-8");
+    assert.deepEqual(out, { status: "ok", cmd });
+    assert.equal(after, before, "machine-protocol file should not be signed");
+  });
+
+  test("refuses to repair --body-file symlinks outside allowed directories", () => {
+    const dir = setupStubHelper();
+    const outsideDir = mkdtempSync(join(homedir(), ".t2685-outside-"));
+    const outsideBodyFile = join(outsideDir, "body.md");
+    const bodyFile = join(dir, "linked-body.md");
+    try {
+      writeFileSync(outsideBodyFile, "unsigned external content\n");
+      symlinkSync(outsideBodyFile, bodyFile);
+      const { log } = makeLogger();
+      const cmd = `gh issue comment 1 --repo o/r --body-file ${bodyFile}`;
+      const out = tryRepairSignature(cmd, dir, log);
+      const after = readFileSync(outsideBodyFile, "utf-8");
+      assert.equal(out.status, "fail");
+      assert.equal(out.reason, FAIL_REASON.BODY_FILE_OUTSIDE_ALLOWED_ROOT);
+      assert.match(out.detail, /body\.md/);
+      assert.equal(after, "unsigned external content\n", "outside target must not be modified");
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
   });
 
   test("refuses to repair heredoc-sourced body (UNPARSEABLE_BODY)", () => {
@@ -426,10 +541,11 @@ describe("checkSignatureFooterGate", () => {
 // ---------------------------------------------------------------------------
 
 describe("FAIL_REASON enum (t2893)", () => {
-  test("exposes the seven canonical failure reasons", () => {
+  test("exposes the canonical failure reasons", () => {
     const expected = [
       "FILE_NOT_FOUND",
       "FILE_UNREADABLE",
+      "BODY_FILE_OUTSIDE_ALLOWED_ROOT",
       "HELPER_MISSING",
       "HELPER_FAILED",
       "UNPARSEABLE_BODY",

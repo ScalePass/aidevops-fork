@@ -77,6 +77,14 @@ if [[ -f "${_PULSE_MERGE_STUCK_DIR}/pulse-rate-limit-circuit-breaker.sh" ]]; the
 	source "${_PULSE_MERGE_STUCK_DIR}/pulse-rate-limit-circuit-breaker.sh"
 fi
 
+# Source REST check helpers (GH#21799) so stuck-merge classification does not
+# burn GraphQL on statusCheckRollup polling.
+if [[ -f "${_PULSE_MERGE_STUCK_DIR}/shared-gh-wrappers-checks.sh" ]]; then
+	# shellcheck source=./shared-gh-wrappers-checks.sh
+	# shellcheck disable=SC1091
+	source "${_PULSE_MERGE_STUCK_DIR}/shared-gh-wrappers-checks.sh"
+fi
+
 # Load thresholds from the canonical config file (env vars take precedence).
 # The conf file lives at .agents/configs/pulse-merge-stuck.conf; we resolve
 # from _PULSE_MERGE_STUCK_DIR (../configs/pulse-merge-stuck.conf).
@@ -100,6 +108,7 @@ fi
 : "${AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES:=5}"
 : "${AIDEVOPS_MERGE_PATTERN_MIN_PRS:=3}"
 : "${AIDEVOPS_MERGE_STUCK_ENABLED:=1}"
+: "${AIDEVOPS_MERGE_ZERO_PROGRESS_RECOVERY_CHECK_SECONDS:=3600}"
 
 # ── Constants (literal-dedup) ────────────────────────────────────────────────
 # Counter and gauge names that would otherwise repeat 3+ times in the body
@@ -107,14 +116,13 @@ fi
 readonly _PMS_COUNTER_ESCALATIONS_FILED="pulse_merge_stuck_escalations_filed"
 readonly _PMS_COUNTER_QUEUE_SATURATION_EVENTS="pulse_actions_queue_saturation_events"
 readonly _PMS_GAUGE_ZERO_PROGRESS_CYCLES='pulse_merge_zero_progress_cycles'
+readonly _PMS_GAUGE_ZERO_PROGRESS_RECOVERY_CHECK_TS='pulse_merge_zero_progress_recovery_check_ts'
 readonly _PMS_JQ_NULL_GUARD="null"
 readonly _PMS_RUNNER_SATURATION_MARKER_TEXT="merge-stuck:runner-queue-saturation"
-# jq filter snippet that selects array elements with a FAILURE rollup
-# conclusion or state. Extracted so the underlying upcase predicate is
-# defined exactly once (via a jq `def`) and reused for both the new-style
-# `.conclusion` and the legacy `.state` field — which is sometimes
-# lower-case for older commit-status checks.
-readonly _PMS_JQ_FAILURE_SELECTOR='def _ueq(f;v): (f // "" | ascii_upcase) == v; select(_ueq(.conclusion; "FAILURE") or _ueq(.state; "FAILURE"))'
+# jq filter snippet that selects normalized REST check entries with a failing
+# conclusion/state. Extracted so the upcase predicate is defined exactly once
+# and reused across classification, fingerprinting, and escalation guidance.
+readonly _PMS_JQ_REST_FAILURE_SELECTOR='def _ueq(f;v): (f // "" | ascii_upcase) == v; select(_ueq(.conclusion; "FAILURE") or _ueq(.conclusion; "TIMED_OUT") or _ueq(.conclusion; "CANCELLED") or _ueq(.state; "FAILURE") or _ueq(.state; "ERROR") or _ueq(.status; "FAILURE"))'
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -171,6 +179,68 @@ _pms_is_eligible_stuck() {
 	return 0
 }
 
+#######################################
+# Fetch normalized REST check-runs for a PR head SHA.
+# Args: $1 = repo_slug, $2 = head SHA
+# Stdout: JSON array, [] on missing helper/API failure
+#######################################
+_pms_check_runs_for_head() {
+	local repo_slug="$1"
+	local head_sha="$2"
+	local runs=""
+	if [[ -n "$repo_slug" && -n "$head_sha" ]] && declare -F gh_pr_check_runs_rest >/dev/null 2>&1; then
+		runs=$(gh_pr_check_runs_rest "$repo_slug" "$head_sha" 2>/dev/null) || runs=""
+	fi
+	[[ -n "$runs" && "$runs" != "null" ]] || runs="[]"
+	printf '%s' "$runs"
+	return 0
+}
+
+#######################################
+# Count queued checks in normalized REST check-runs JSON.
+# Args: $1 = check-runs JSON array
+# Stdout: integer count
+#######################################
+_pms_queued_check_count() {
+	local runs_json="$1"
+	local count=""
+	count=$(printf '%s' "$runs_json" | jq -r \
+		'[.[]? | select((.status // "" | ascii_upcase) == "QUEUED")] | length' \
+		2>/dev/null) || count="0"
+	[[ "$count" =~ ^[0-9]+$ ]] || count=0
+	printf '%s' "$count"
+	return 0
+}
+
+#######################################
+# Count failing checks in normalized REST check-runs JSON.
+# Args: $1 = check-runs JSON array
+# Stdout: integer count
+#######################################
+_pms_failing_check_count() {
+	local runs_json="$1"
+	local count=""
+	count=$(printf '%s' "$runs_json" | jq -r \
+		"[.[]? | ${_PMS_JQ_REST_FAILURE_SELECTOR}] | length" \
+		2>/dev/null) || count="0"
+	[[ "$count" =~ ^[0-9]+$ ]] || count=0
+	printf '%s' "$count"
+	return 0
+}
+
+#######################################
+# Format failing check names from normalized REST check-runs JSON.
+# Args: $1 = check-runs JSON array
+# Stdout: Markdown bullet list, empty if none
+#######################################
+_pms_failing_check_bullets() {
+	local runs_json="$1"
+	printf '%s' "$runs_json" | jq -r \
+		"[.[]? | ${_PMS_JQ_REST_FAILURE_SELECTOR} | \"- \" + (.name // .context // \"unknown\")] | unique | join(\"\\n\")" \
+		2>/dev/null
+	return 0
+}
+
 # ── Classifier ───────────────────────────────────────────────────────────────
 
 #######################################
@@ -197,14 +267,17 @@ _classify_stuck_pr() {
 	local repo_slug="$2"
 	local is_saturated="${3:-0}"
 
-	# Cheap fast paths first. Fetch labels + mergeable + checks rollup once.
+	# Cheap fast paths first. Fetch labels + mergeable + head SHA once. Check
+	# state comes from REST check-runs below, not GraphQL statusCheckRollup.
 	local pr_meta
-	pr_meta=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json labels,mergeable,statusCheckRollup 2>/dev/null) || pr_meta=""
+	pr_meta=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
+		--json labels,mergeable,headRefOid 2>/dev/null) || pr_meta=""
 
-	local mergeable="" labels=""
+	local mergeable="" labels="" head_sha="" check_runs=""
 	mergeable=$(printf '%s' "$pr_meta" | jq -r '.mergeable // "UNKNOWN"' 2>/dev/null)
 	labels=$(printf '%s' "$pr_meta" | jq -r '[.labels[].name] | join(",")' 2>/dev/null)
+	head_sha=$(printf '%s' "$pr_meta" | jq -r '.headRefOid // ""' 2>/dev/null)
+	check_runs=$(_pms_check_runs_for_head "$repo_slug" "$head_sha")
 
 	# Runner queue saturation takes priority when the repo is saturated
 	# AND this PR has a QUEUED check in its rollup. This must come BEFORE
@@ -214,10 +287,7 @@ _classify_stuck_pr() {
 	# during a runner outage. (t3211)
 	if [[ "$is_saturated" == "1" ]]; then
 		local has_queued
-		has_queued=$(printf '%s' "$pr_meta" | jq -r \
-			'[.statusCheckRollup[]? | select((.status // "" | ascii_upcase) == "QUEUED")] | length' \
-			2>/dev/null)
-		[[ "$has_queued" =~ ^[0-9]+$ ]] || has_queued=0
+		has_queued=$(_pms_queued_check_count "$check_runs")
 		if [[ "$has_queued" -gt 0 ]]; then
 			printf 'STUCK_RUNNER_QUEUE_SATURATION'
 			return 0
@@ -261,10 +331,7 @@ _classify_stuck_pr() {
 	# Rollup contains a FAILURE / FAILED conclusion? Use the shared
 	# selector to keep the jq expression DRY across call sites.
 	local has_failure
-	has_failure=$(printf '%s' "$pr_meta" | jq -r \
-		"[.statusCheckRollup[]? | ${_PMS_JQ_FAILURE_SELECTOR}] | length" \
-		2>/dev/null)
-	[[ "$has_failure" =~ ^[0-9]+$ ]] || has_failure=0
+	has_failure=$(_pms_failing_check_count "$check_runs")
 	if [[ "$has_failure" -gt 0 ]]; then
 		printf 'STUCK_CHECKS_FAILING'
 		return 0
@@ -281,14 +348,15 @@ _classify_stuck_pr() {
 _pms_failure_fingerprint() {
 	local pr_number="$1"
 	local repo_slug="$2"
-	local rollup
-	rollup=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json statusCheckRollup --jq '.statusCheckRollup // []' 2>/dev/null) || rollup="[]"
+	local head_sha="" runs_json=""
+	head_sha=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
+		--json headRefOid --jq '.headRefOid // ""' 2>/dev/null) || head_sha=""
+	runs_json=$(_pms_check_runs_for_head "$repo_slug" "$head_sha")
 
-	# Extract names of checks in FAILURE conclusion or state, normalize, sort, join.
-	# Uses the shared _PMS_JQ_FAILURE_SELECTOR to keep the predicate DRY.
-	printf '%s' "$rollup" | jq -r \
-		"[ .[] | ${_PMS_JQ_FAILURE_SELECTOR} | (.name // .context // \"unknown\") ] | sort | unique | join(\",\")" \
+	# Extract names of failing checks, normalize, sort, join. Uses the shared
+	# REST failure selector to keep the predicate DRY.
+	printf '%s' "$runs_json" | jq -r \
+		"[ .[] | ${_PMS_JQ_REST_FAILURE_SELECTOR} | (.name // .context // \"unknown\") ] | sort | unique | join(\",\")" \
 		2>/dev/null
 }
 
@@ -350,13 +418,13 @@ _escalate_individual_stuck_pr() {
 		return 0
 	fi
 
-	# Fetch failing check names for the worker-ready guidance using the
-	# shared FAILURE selector.
-	local failing_checks
-	failing_checks=$(gh pr view "$pr_number" --repo "$repo_slug" \
-		--json statusCheckRollup --jq \
-		"[.statusCheckRollup[]? | ${_PMS_JQ_FAILURE_SELECTOR} | \"- \" + (.name // .context // \"unknown\")] | join(\"\\n\")" \
-		2>/dev/null)
+	# Fetch failing check names for the worker-ready guidance via REST check-runs
+	# to avoid GraphQL statusCheckRollup polling in every pulse cycle.
+	local failing_checks="" head_sha="" runs_json=""
+	head_sha=$(gh_pr_view "$pr_number" --repo "$repo_slug" \
+		--json headRefOid --jq '.headRefOid // ""' 2>/dev/null) || head_sha=""
+	runs_json=$(_pms_check_runs_for_head "$repo_slug" "$head_sha")
+	failing_checks=$(_pms_failing_check_bullets "$runs_json")
 	[[ -n "$failing_checks" ]] || failing_checks="- (no FAILURE entries in rollup; check rollup manually)"
 
 	local marker="<!-- merge-stuck:individual -->"
@@ -381,7 +449,6 @@ ${failing_checks}
 
 1. Read PR #${pr_number} body + the latest check run logs:
    \`\`\`bash
-   gh pr view ${pr_number} --repo ${repo_slug} --json statusCheckRollup
    gh pr checks ${pr_number} --repo ${repo_slug}
    \`\`\`
 2. If the failing checks are environment/Setup-step (Format, Lint, Typecheck all FAIL at the same step), the canonical default branch likely has a broken lockfile or a CI infra change — fix at the base, not on this PR. Look for a sibling outage meta-issue in this repo (filed by the same detector) before forking off here.
@@ -890,8 +957,8 @@ _pms_file_runner_saturation_issue() {
 
 # ── Zero-progress meta-issue ────────────────────────────────────────────────
 
-# File ONE meta-issue describing the throughput collapse when consecutive
-# zero-progress cycles cross the threshold. Dedup'd by the fixed marker.
+# File ONE meta-issue when consecutive zero-progress cycles cross the threshold.
+# The caller invokes this on the crossing edge; open-issue dedupe is a safety net.
 # Disabled while the GraphQL circuit-breaker is tripped — the breaker
 # already names the root cause and a meta-issue would just be noise.
 _pms_file_zero_progress_meta_issue() {
@@ -1004,7 +1071,7 @@ The pulse merge zero-progress detector recovered automatically: ${reason}.
 
 Evidence:
 - pulse_merge_zero_progress_cycles was reset to 0.
-- The next detector cycle can file a fresh issue if throughput collapses again.
+- A fresh issue is filed only if a new zero-progress streak crosses the threshold.
 
 Closing this stale zero-progress meta-issue so auto-dispatch does not spend worker capacity on an already-recovered incident."
 
@@ -1026,9 +1093,9 @@ Closing this stale zero-progress meta-issue so auto-dispatch does not spend work
 # age gate — zero-progress detection wants the wider population (any cycle
 # with eligible-unmerged > 0 + zero merges is a candidate, regardless of age).
 # It must still exclude PRs that the merge pass already proved are not mergeable
-# in this cycle (for example failing required checks or origin:worker PRs with
-# no linked issue), otherwise a legitimate skip becomes a false zero-progress
-# structural-block signal.
+# in this cycle (for example failing required checks, origin:interactive PRs
+# held for manual merge, or origin:worker PRs with no linked issue), otherwise a
+# legitimate skip becomes a false zero-progress structural-block signal.
 #
 # Args: $1 = repo_slug
 # Stdout: integer count
@@ -1052,6 +1119,14 @@ _pms_pr_counts_for_zero_progress() {
 	if declare -F _check_required_checks_passing >/dev/null 2>&1; then
 		if ! _check_required_checks_passing "$repo_slug" "$pr_number" >/dev/null 2>&1; then
 			echo "[pulse-merge-stuck] _pms_count_eligible_unmerged_for_repo: excluding PR #${pr_number} in ${repo_slug} — required checks are not provably passing" >>"$LOGFILE"
+			return 1
+		fi
+	fi
+
+	if [[ ",${labels_str}," == *",origin:interactive,"* ]]; then
+		if ! declare -F _interactive_pr_auto_merge_allowed >/dev/null 2>&1 \
+			|| ! _interactive_pr_auto_merge_allowed "$pr_number" "$repo_slug" "$labels_str" >/dev/null 2>&1; then
+			echo "[pulse-merge-stuck] _pms_count_eligible_unmerged_for_repo: excluding PR #${pr_number} in ${repo_slug} — origin:interactive PR requires manual merge" >>"$LOGFILE"
 			return 1
 		fi
 	fi
@@ -1330,6 +1405,31 @@ pulse_merge_stuck_run_pass() {
 }
 
 #######################################
+# Close stale zero-progress meta-issues after recovery is already gauged 0.
+#
+# Covers pulse-stats.json loss/rotation: the next healthy cycle has cur_before=0,
+# so the normal transition close path would miss an already-open meta-issue.
+# Args: $1 - human-readable recovery reason
+#######################################
+_pms_close_zero_progress_meta_issue_if_recovered_due() {
+	local reason="$1"
+	local now_epoch
+	now_epoch=$(date +%s 2>/dev/null) || now_epoch=0
+	[[ "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch=0
+	local interval="${AIDEVOPS_MERGE_ZERO_PROGRESS_RECOVERY_CHECK_SECONDS:-3600}"
+	[[ "$interval" =~ ^[0-9]+$ ]] || interval=3600
+	local last_check
+	last_check=$(pulse_stats_get_gauge "$_PMS_GAUGE_ZERO_PROGRESS_RECOVERY_CHECK_TS")
+	[[ "$last_check" =~ ^[0-9]+$ ]] || last_check=0
+	if [[ "$interval" -gt 0 && "$last_check" -gt 0 && $((now_epoch - last_check)) -lt "$interval" ]]; then
+		return 0
+	fi
+	pulse_stats_set_gauge "$_PMS_GAUGE_ZERO_PROGRESS_RECOVERY_CHECK_TS" "$now_epoch"
+	_pms_close_zero_progress_meta_issue_if_recovered "$reason"
+	return 0
+}
+
+#######################################
 # Increment the zero-progress counter for the current pulse cycle.
 # Called by pulse-merge.sh::merge_ready_prs_all_repos at the END of the
 # merge pass — see the wiring there.
@@ -1360,6 +1460,8 @@ pulse_merge_zero_progress_record() {
 		pulse_stats_set_gauge "$_PMS_GAUGE_ZERO_PROGRESS_CYCLES" "0"
 		if [[ "$cur_before" -gt 0 ]]; then
 			_pms_close_zero_progress_meta_issue_if_recovered "${merged_count} PR(s) merged after a ${cur_before}-cycle zero-progress streak"
+		else
+			_pms_close_zero_progress_meta_issue_if_recovered_due "${merged_count} PR(s) merged while zero-progress gauge was already 0"
 		fi
 		return 0
 	fi
@@ -1371,21 +1473,24 @@ pulse_merge_zero_progress_record() {
 		pulse_stats_set_gauge "$_PMS_GAUGE_ZERO_PROGRESS_CYCLES" "0"
 		if [[ "$cur_before" -gt 0 ]]; then
 			_pms_close_zero_progress_meta_issue_if_recovered "eligible-unmerged dropped to 0 after a ${cur_before}-cycle zero-progress streak"
+		else
+			_pms_close_zero_progress_meta_issue_if_recovered_due "eligible-unmerged is 0 while zero-progress gauge was already 0"
 		fi
 		return 0
 	fi
 
-	# Increment the gauge by 1.
 	local cur
 	cur=$(pulse_stats_get_gauge "$_PMS_GAUGE_ZERO_PROGRESS_CYCLES")
 	[[ "$cur" =~ ^[0-9]+$ ]] || cur=0
 	cur=$((cur + 1))
 	pulse_stats_set_gauge "$_PMS_GAUGE_ZERO_PROGRESS_CYCLES" "$cur"
+	local threshold="${AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES:-}"
+	[[ "$threshold" =~ ^[0-9]+$ ]] || threshold=5
+	echo "[pulse-merge-stuck] pulse_merge_zero_progress_record: zero_progress_cycles=${cur}/${threshold}, eligible_unmerged=${eligible_unmerged}" >>"$LOGFILE"
 
-	echo "[pulse-merge-stuck] pulse_merge_zero_progress_record: zero_progress_cycles=${cur}/${AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES}, eligible_unmerged=${eligible_unmerged}" >>"$LOGFILE"
-
-	# At threshold, file the meta-issue (dedup'd by marker).
-	if [[ "$cur" -ge "$AIDEVOPS_MERGE_ZERO_PROGRESS_CYCLES" ]]; then
+	# File only on the threshold-crossing edge to prevent post-close issue storms.
+	if [[ "$cur_before" -lt "$threshold" \
+		&& "$cur" -ge "$threshold" ]]; then
 		local stuck_summary
 		stuck_summary=$(pulse_stats_get_gauge "pulse_merge_eligible_stuck_pr_count")
 		stuck_summary="eligible_unmerged_this_cycle=${eligible_unmerged}, eligible_stuck_count=${stuck_summary}, zero_progress_cycles=${cur}"

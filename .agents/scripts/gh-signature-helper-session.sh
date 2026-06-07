@@ -471,9 +471,21 @@ _gh_sig_env_truthy() {
 }
 
 _detect_explicit_session_type() {
+	case "${AIDEVOPS_SESSION_ORIGIN:-}" in
+	worker)
+		echo "worker"
+		return 0
+		;;
+	interactive)
+		echo "interactive"
+		return 0
+		;;
+	esac
+
 	if _gh_sig_env_truthy "${FULL_LOOP_HEADLESS:-}" ||
 		_gh_sig_env_truthy "${AIDEVOPS_HEADLESS:-}" ||
-		_gh_sig_env_truthy "${OPENCODE_HEADLESS:-}"; then
+		_gh_sig_env_truthy "${OPENCODE_HEADLESS:-}" ||
+		_gh_sig_env_truthy "${GITHUB_ACTIONS:-}"; then
 		echo "worker"
 		return 0
 	fi
