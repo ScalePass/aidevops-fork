@@ -104,6 +104,8 @@ _routine_execute() {
 
 	local agents_dir="${HOME}/.aidevops/agents"
 	local status="success"
+	local _exec_start _exec_end _elapsed
+	_exec_start=$(date +%s)
 
 	if [[ -n "$run_script" ]]; then
 		# Script-only dispatch — zero LLM tokens.
@@ -167,11 +169,14 @@ _routine_execute() {
 		fi
 	fi
 
+	_exec_end=$(date +%s)
+	_elapsed=$(( _exec_end - _exec_start ))
+
 	_routine_update_state "$routine_id" "$status"
 
 	# Call routine-log-helper.sh if available (t1926)
 	if [[ -x "$ROUTINE_LOG_HELPER" ]]; then
-		"$ROUTINE_LOG_HELPER" update "$routine_id" "$status" 2>/dev/null || true
+		"$ROUTINE_LOG_HELPER" update "$routine_id" --status "$status" --duration "${_elapsed:-0}" 2>/dev/null || true
 	fi
 
 	return 0
